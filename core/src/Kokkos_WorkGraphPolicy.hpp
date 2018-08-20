@@ -256,4 +256,8 @@ public:
 #include "Threads/Kokkos_Threads_WorkGraphPolicy.hpp"
 #endif
 
+#ifdef KOKKOS_ENABLE_HPX
+#include "HPX/Kokkos_HPX_WorkGraphPolicy.hpp"
+#endif
+
 #endif /* #define KOKKOS_WORKGRAPHPOLICY_HPP */
