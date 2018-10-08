@@ -880,5 +880,1398 @@ public:
 };
 } // namespace Impl
 } // namespace Kokkos
+
+namespace Kokkos {
+namespace Impl {
+
+template <class FunctorType, class... Traits>
+class ParallelFor<FunctorType, Kokkos::RangePolicy<Traits...>, Kokkos::HPX> {
+private:
+  typedef Kokkos::RangePolicy<Traits...> Policy;
+  typedef typename Policy::work_tag WorkTag;
+  typedef typename Policy::WorkRange WorkRange;
+  typedef typename Policy::member_type Member;
+
+  const FunctorType m_functor;
+  const Policy m_policy;
+
+  template <class TagType>
+  inline static
+      typename std::enable_if<std::is_same<TagType, void>::value>::type
+      exec_functor(const FunctorType &functor, const Member iwork) {
+    functor(iwork);
+  }
+
+  template <class TagType>
+  inline static
+      typename std::enable_if<!std::is_same<TagType, void>::value>::type
+      exec_functor(const FunctorType &functor, const Member iwork) {
+    const TagType t{};
+    functor(t, iwork);
+  }
+
+public:
+  inline void execute() const {
+    auto f = [this]() {
+      // TODO: hpx::get_num_worker_threads() is wrong. Should be pool threads.
+      // TODO: Should restrict number of threads in for_loop.
+      // auto const num_worker_threads = hpx::get_num_worker_threads();
+
+      // This is the easy HPX way to do things.
+      hpx::parallel::for_loop(hpx::parallel::execution::par.with(
+                                  hpx::parallel::execution::guided_chunk_size(
+                                      m_policy.chunk_size())),
+                              m_policy.begin(), m_policy.end(),
+                              [this](typename Policy::member_type const i) {
+                                exec_functor<WorkTag>(m_functor, i);
+                              });
+
+      // This is the complicated, manual way to do things.
+      // hpx::parallel::for_loop(
+      //     hpx::parallel::execution::par, 0, num_worker_threads,
+      //     [this, num_worker_threads](std::size_t const t) {
+      //       // TODO: Use utilities that already exist.
+      //       const typename Policy::member_type b = m_policy.begin();
+      //       const typename Policy::member_type e = m_policy.end();
+      //       const typename Policy::member_type n = e - b;
+      //       const typename Policy::member_type chunk_size =
+      //           (n - 1) / num_worker_threads + 1;
+
+      //       const typename Policy::member_type b_local = b + t * chunk_size;
+      //       Member e_local = b + (t + 1) * chunk_size;
+      //       if (e_local > e) {
+      //         e_local = e;
+      //       };
+
+      //       LOG("chunk range in thread " << hpx::get_worker_thread_num()
+      //                                    << " is " << b_local << " to "
+      //                                    << e_local);
+
+      //       for (typename Policy::member_type i = b_local; i < e_local; ++i)
+      //       {
+      //         exec_functor<WorkTag>(m_functor, i);
+      //       }
+      //     });
+    };
+
+    if (hpx::threads::get_self_ptr()) {
+      f();
+    } else {
+      hpx::threads::run_as_hpx_thread(f);
+    }
+  }
+
+  inline ParallelFor(const FunctorType &arg_functor, Policy arg_policy)
+      : m_functor(arg_functor), m_policy(arg_policy) {}
+};
+
+template <class FunctorType, class... Traits>
+class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::HPX> {
+private:
+  typedef Kokkos::MDRangePolicy<Traits...> MDRangePolicy;
+  typedef typename MDRangePolicy::impl_range_policy Policy;
+  typedef typename MDRangePolicy::work_tag WorkTag;
+  typedef typename Policy::WorkRange WorkRange;
+  typedef typename Policy::member_type Member;
+  typedef typename Kokkos::Impl::HostIterateTile<
+      MDRangePolicy, FunctorType, typename MDRangePolicy::work_tag, void>
+      iterate_type;
+  const FunctorType m_functor;
+  const MDRangePolicy m_mdr_policy;
+  const Policy m_policy; // construct as RangePolicy( 0, num_tiles
+                         // ).set_chunk_size(1) in ctor
+
+public:
+  inline void execute() const {
+    auto f = [this]() {
+      // TODO: hpx::get_num_worker_threads() is wrong. Should be pool threads.
+      // TODO: Should restrict number of threads in for_loop.
+      // auto const num_worker_threads = hpx::get_num_worker_threads();
+
+      // This is the easy HPX way to do things.
+      hpx::parallel::for_loop(hpx::parallel::execution::par.with(
+                                  hpx::parallel::execution::guided_chunk_size(
+                                      m_policy.chunk_size())),
+                              m_policy.begin(), m_policy.end(),
+                              [this](typename Policy::member_type const i) {
+                                iterate_type(m_mdr_policy, m_functor)(i);
+                              });
+
+      // This is the complicated, manual way to do things.
+      // hpx::parallel::for_loop(
+      //     hpx::parallel::execution::par, 0, num_worker_threads,
+      //     [this, num_worker_threads](std::size_t const t) {
+      //       // TODO: Use utilities that already exist.
+      //       const typename Policy::member_type b = m_policy.begin();
+      //       const typename Policy::member_type e = m_policy.end();
+      //       const typename Policy::member_type n = e - b;
+      //       const typename Policy::member_type chunk_size =
+      //           (n - 1) / num_worker_threads + 1;
+
+      //       const typename Policy::member_type b_local = b + t * chunk_size;
+      //       Member e_local = b + (t + 1) * chunk_size;
+      //       if (e_local > e) {
+      //         e_local = e;
+      //       };
+
+      //       LOG("chunk range in thread " << hpx::get_worker_thread_num()
+      //                                    << " is " << b_local << " to "
+      //                                    << e_local);
+
+      //       for (typename Policy::member_type i = b_local; i < e_local; ++i)
+      //       {
+      //         iterate_type(m_mdr_policy, m_functor)(i);
+      //       }
+      //     });
+    };
+
+    if (hpx::threads::get_self_ptr()) {
+      f();
+    } else {
+      hpx::threads::run_as_hpx_thread(f);
+    }
+  }
+
+  inline ParallelFor(const FunctorType &arg_functor, MDRangePolicy arg_policy)
+      : m_functor(arg_functor), m_mdr_policy(arg_policy),
+        m_policy(Policy(0, m_mdr_policy.m_num_tiles).set_chunk_size(1)) {}
+}; // namespace Impl
+} // namespace Impl
+} // namespace Kokkos
+
+namespace Kokkos {
+namespace Impl {
+
+// TODO: Could this be made to work with hpx::parallel::reduce?
+template <class FunctorType, class ReducerType, class... Traits>
+class ParallelReduce<FunctorType, Kokkos::RangePolicy<Traits...>, ReducerType,
+                     Kokkos::HPX> {
+private:
+  typedef Kokkos::RangePolicy<Traits...> Policy;
+  typedef typename Policy::work_tag WorkTag;
+  typedef typename Policy::WorkRange WorkRange;
+  typedef typename Policy::member_type Member;
+  typedef FunctorAnalysis<FunctorPatternInterface::REDUCE, Policy, FunctorType>
+      Analysis;
+  typedef Kokkos::Impl::if_c<std::is_same<InvalidType, ReducerType>::value,
+                             FunctorType, ReducerType>
+      ReducerConditional;
+  typedef typename ReducerConditional::type ReducerTypeFwd;
+  typedef
+      typename Kokkos::Impl::if_c<std::is_same<InvalidType, ReducerType>::value,
+                                  WorkTag, void>::type WorkTagFwd;
+  typedef Kokkos::Impl::FunctorValueInit<ReducerTypeFwd, WorkTagFwd> ValueInit;
+  typedef Kokkos::Impl::FunctorValueJoin<ReducerTypeFwd, WorkTagFwd> ValueJoin;
+  typedef typename Analysis::value_type value_type;
+  typedef typename Analysis::pointer_type pointer_type;
+  typedef typename Analysis::reference_type reference_type;
+
+  const FunctorType m_functor;
+  const Policy m_policy;
+  const ReducerType m_reducer;
+  const pointer_type m_result_ptr;
+
+  template <class TagType>
+  inline static
+      typename std::enable_if<std::is_same<TagType, void>::value>::type
+      exec_functor(const FunctorType &functor, const Member iwork,
+                   reference_type update) {
+    functor(iwork, update);
+  }
+
+  template <class TagType>
+  inline static
+      typename std::enable_if<!std::is_same<TagType, void>::value>::type
+      exec_functor(const FunctorType &functor, const Member iwork,
+                   reference_type update) {
+    const TagType t{};
+    functor(t, iwork, update);
+  }
+
+public:
+  inline void execute() const {
+
+    auto f = [this]() {
+#if defined(KOKKOS_HPX_NATIVE_REDUCE) && (KOKKOS_HPX_NATIVE_REDUCE == 1)
+    // TODO: Could this be made to work?
+    // value_type starting_value;
+    // reference_type starting_value_ref = ValueInit::init(
+    //     ReducerConditional::select(m_functor, m_reducer), &starting_value);
+    // hpx::parallel::reduce(
+    //     hpx::parallel::execution::par, m_policy.begin(), m_policy.end(),
+    //     [this](typename Policy::member_type const &x, typename
+    //     Policy::member_type const &y) {
+    //       value_type z;
+    //       reference_type z_ref = ValueInit::init(
+    //           ReducerConditional::select(m_functor, m_reducer), &z);
+    //       exec_functor<WorkTag>(m_functor, x, z_ref);
+    //       exec_functor<WorkTag>(m_functor, y, z_ref);
+    //       return z;
+    //     },
+    //     starting_value_ref);
+
+    // if (m_result_ptr != nullptr) {
+    //   const int n = Analysis::value_count(
+    //       ReducerConditional::select(m_functor, m_reducer));
+
+    //   for (int j = 0; j < n; ++j) {
+    //     m_result_ptr[j] = starting_value[j];
+    //   }
+    // }
+#else
+      // TODO: hpx::get_num_worker_threads() is wrong. Should be pool threads.
+      auto const num_worker_threads = hpx::get_num_worker_threads();
+
+      // This gets the size (in bytes) of the value we are reducing.
+      const size_t value_size_bytes = Analysis::value_size(
+          ReducerConditional::select(m_functor, m_reducer));
+
+      // Need to get or allocate a pointer for the results. This would normally
+      // come from an instance-specific scratch pool (only one operation at a
+      // time). (HPXExec* m_instance)
+
+      // NOTE: If we want to support multiple HPX backend parallel regions
+      // running simultaneously we can't reuse the scratch space (without
+      // additional checks).
+
+      // NOTE: We can't reuse this one because there might not be enough space
+      // for all threads. This only works on the serial backend.
+
+      // ptr = m_result_ptr;
+
+      std::vector<value_type> intermediate_results(num_worker_threads);
+
+      hpx::parallel::execution::static_chunk_size s(1);
+      hpx::parallel::for_loop(
+          hpx::parallel::execution::par.with(s), 0, num_worker_threads,
+          [this, &intermediate_results,
+           num_worker_threads](std::size_t const t) {
+            // This initializes the t:th reduction value to the appropriate
+            // init value based on the functor.
+            reference_type update = ValueInit::init(
+                ReducerConditional::select(m_functor, m_reducer),
+                (pointer_type)(&intermediate_results[t]));
+
+            // TODO: Use utilities that already exist.
+            const typename Policy::member_type b = m_policy.begin();
+            const typename Policy::member_type e = m_policy.end();
+            const typename Policy::member_type n = e - b;
+            const typename Policy::member_type chunk_size =
+                (n - 1) / num_worker_threads + 1;
+
+            const typename Policy::member_type b_local = b + t * chunk_size;
+            Member e_local = b + (t + 1) * chunk_size;
+            if (e_local > e) {
+              e_local = e;
+            };
+
+            LOG("chunk range in thread " << hpx::get_worker_thread_num()
+                                         << " is " << b_local << " to "
+                                         << e_local);
+
+            for (typename Policy::member_type i = b_local; i < e_local; ++i) {
+              exec_functor<WorkTag>(m_functor, i, update);
+            }
+
+            LOG("intermediate result from worker thread "
+                << hpx::get_worker_thread_num() << " is " << update);
+          });
+
+      LOG("reduced value from worker thread " << 0 << " is "
+                                              << intermediate_results[0]);
+      for (int i = 1; i < num_worker_threads; ++i) {
+        LOG("reduced value from worker thread " << i << " is "
+                                                << intermediate_results[i]);
+        ValueJoin::join(ReducerConditional::select(m_functor, m_reducer),
+                        &intermediate_results[0], &intermediate_results[i]);
+      }
+
+      Kokkos::Impl::FunctorFinal<ReducerTypeFwd, WorkTagFwd>::final(
+          ReducerConditional::select(m_functor, m_reducer),
+          &intermediate_results[0]);
+
+      LOG("final reduced value is " << intermediate_results[0]);
+
+      if (m_result_ptr != nullptr) {
+        const int n = Analysis::value_count(
+            ReducerConditional::select(m_functor, m_reducer));
+
+        for (int j = 0; j < n; ++j) {
+          // Elements could be either scalar values or arrays. So we have to get
+          // the pointer to the underlying storage, and dereference it with the
+          // subscript operator. When the value is a scalar n == 1 and we will
+          // only get the first element from intermediate_results.
+          m_result_ptr[j] = intermediate_results.data()[j];
+        }
+
+        LOG("final reduced value in result_ptr is " << m_result_ptr[0]);
+      }
+#endif
+    };
+
+    if (hpx::threads::get_self_ptr()) {
+      f();
+    } else {
+      hpx::threads::run_as_hpx_thread(f);
+    }
+  }
+
+  template <class ViewType>
+  inline ParallelReduce(
+      const FunctorType &arg_functor, Policy arg_policy,
+      const ViewType &arg_view,
+      typename std::enable_if<Kokkos::is_view<ViewType>::value &&
+                                  !Kokkos::is_reducer_type<ReducerType>::value,
+                              void *>::type = NULL)
+      : m_functor(arg_functor), m_policy(arg_policy), m_reducer(InvalidType()),
+        m_result_ptr(arg_view.data()) {}
+
+  inline ParallelReduce(const FunctorType &arg_functor, Policy arg_policy,
+                        const ReducerType &reducer)
+      : m_functor(arg_functor), m_policy(arg_policy), m_reducer(reducer),
+        m_result_ptr(reducer.view().data()) {}
+};
+
+// TODO: Could this be made to work with hpx::parallel::reduce?
+template <class FunctorType, class ReducerType, class... Traits>
+class ParallelReduce<FunctorType, Kokkos::MDRangePolicy<Traits...>, ReducerType,
+                     Kokkos::HPX> {
+private:
+  typedef Kokkos::MDRangePolicy<Traits...> MDRangePolicy;
+  typedef typename MDRangePolicy::impl_range_policy Policy;
+  typedef typename MDRangePolicy::work_tag WorkTag;
+  typedef typename Policy::WorkRange WorkRange;
+  typedef typename Policy::member_type Member;
+  typedef FunctorAnalysis<FunctorPatternInterface::REDUCE, MDRangePolicy,
+                          FunctorType>
+      Analysis;
+  typedef Kokkos::Impl::if_c<std::is_same<InvalidType, ReducerType>::value,
+                             FunctorType, ReducerType>
+      ReducerConditional;
+  typedef typename ReducerConditional::type ReducerTypeFwd;
+  typedef
+      typename Kokkos::Impl::if_c<std::is_same<InvalidType, ReducerType>::value,
+                                  WorkTag, void>::type WorkTagFwd;
+  typedef Kokkos::Impl::FunctorValueInit<ReducerTypeFwd, WorkTagFwd> ValueInit;
+  typedef Kokkos::Impl::FunctorValueJoin<ReducerTypeFwd, WorkTagFwd> ValueJoin;
+  typedef typename Analysis::pointer_type pointer_type;
+  typedef typename Analysis::value_type value_type;
+  typedef typename Analysis::reference_type reference_type;
+  using iterate_type =
+      typename Kokkos::Impl::HostIterateTile<MDRangePolicy, FunctorType,
+                                             WorkTag, reference_type>;
+  HPXExec *m_instance;
+  const FunctorType m_functor;
+  const MDRangePolicy m_mdr_policy;
+  const Policy m_policy; // construct as RangePolicy( 0, num_tiles
+                         // ).set_chunk_size(1) in ctor
+  const ReducerType m_reducer;
+  const pointer_type m_result_ptr;
+
+  template <class TagType>
+  inline static
+      typename std::enable_if<std::is_same<TagType, void>::value>::type
+      exec_functor(const FunctorType &functor, const Member iwork,
+                   reference_type update) {
+    functor(iwork, update);
+  }
+
+  template <class TagType>
+  inline static
+      typename std::enable_if<!std::is_same<TagType, void>::value>::type
+      exec_functor(const FunctorType &functor, const Member iwork,
+                   reference_type update) {
+    const TagType t{};
+    functor(t, iwork, update);
+  }
+
+public:
+  inline void execute() const {
+    auto f = [this]() {
+      // TODO: hpx::get_num_worker_threads() is wrong. Should be pool
+      // threads.
+      auto const num_worker_threads = hpx::get_num_worker_threads();
+
+      // This gets the size (in bytes) of the value we are reducing.
+      const size_t value_size_bytes = Analysis::value_size(
+          ReducerConditional::select(m_functor, m_reducer));
+
+      // Need to get or allocate a pointer for the results. This would
+      // normally come from an instance-specific scratch pool (only one
+      // operation at a time). (HPXExec* m_instance)
+
+      // NOTE: If we want to support multiple HPX backend parallel regions
+      // running simultaneously we can't reuse the scratch space (without
+      // additional checks).
+
+      // NOTE: We can't reuse this one because there might not be enough
+      // space for all threads. This only works on the serial backend.
+
+      // ptr = m_result_ptr;
+
+      std::vector<value_type> intermediate_results(num_worker_threads);
+
+      hpx::parallel::execution::static_chunk_size s(1);
+      hpx::parallel::for_loop(
+          hpx::parallel::execution::par.with(s), 0, num_worker_threads,
+          [this, &intermediate_results,
+           num_worker_threads](std::size_t const t) {
+            // This initializes the t:th reduction value to the appropriate
+            // init value based on the functor.
+            reference_type update = ValueInit::init(
+                ReducerConditional::select(m_functor, m_reducer),
+                (pointer_type)(&intermediate_results[t]));
+
+            // TODO: Use utilities that already exist.
+            const typename Policy::member_type b = m_policy.begin();
+            const typename Policy::member_type e = m_policy.end();
+            const typename Policy::member_type n = e - b;
+            const typename Policy::member_type chunk_size =
+                (n - 1) / num_worker_threads + 1;
+
+            const typename Policy::member_type b_local = b + t * chunk_size;
+            Member e_local = b + (t + 1) * chunk_size;
+            if (e_local > e) {
+              e_local = e;
+            };
+
+            LOG("chunk range in thread " << hpx::get_worker_thread_num()
+                                         << " is " << b_local << " to "
+                                         << e_local);
+
+            for (typename Policy::member_type i = b_local; i < e_local; ++i) {
+              exec_functor<WorkTag>(m_functor, i, update);
+            }
+
+            LOG("intermediate result from worker thread "
+                << hpx::get_worker_thread_num() << " is " << update);
+          });
+
+      LOG("reduced value from worker thread " << 0 << " is "
+                                              << intermediate_results[0]);
+      for (int i = 1; i < num_worker_threads; ++i) {
+        LOG("reduced value from worker thread " << i << " is "
+                                                << intermediate_results[i]);
+        ValueJoin::join(ReducerConditional::select(m_functor, m_reducer),
+                        &intermediate_results[0], &intermediate_results[i]);
+      }
+
+      Kokkos::Impl::FunctorFinal<ReducerTypeFwd, WorkTagFwd>::final(
+          ReducerConditional::select(m_functor, m_reducer),
+          &intermediate_results[0]);
+
+      LOG("final reduced value is " << intermediate_results[0]);
+
+      if (m_result_ptr != nullptr) {
+        const int n = Analysis::value_count(
+            ReducerConditional::select(m_functor, m_reducer));
+
+        for (int j = 0; j < n; ++j) {
+          // Elements could be either scalar values or arrays. So we have to
+          // get the pointer to the underlying storage, and dereference it
+          // with the subscript operator. When the value is a scalar n == 1
+          // and we will only get the first element from
+          // intermediate_results.
+          m_result_ptr[j] = intermediate_results.data()[j];
+        }
+
+        LOG("final reduced value in result_ptr is " << m_result_ptr[0]);
+      }
+    };
+
+    if (hpx::threads::get_self_ptr()) {
+      f();
+    } else {
+      hpx::threads::run_as_hpx_thread(f);
+    }
+  }
+
+  template <class ViewType>
+  inline ParallelReduce(
+      const FunctorType &arg_functor, MDRangePolicy arg_policy,
+      const ViewType &arg_view,
+      typename std::enable_if<Kokkos::is_view<ViewType>::value &&
+                                  !Kokkos::is_reducer_type<ReducerType>::value,
+                              void *>::type = NULL)
+      : m_functor(arg_functor), m_mdr_policy(arg_policy),
+        m_policy(Policy(0, m_mdr_policy.m_num_tiles).set_chunk_size(1)),
+        m_reducer(InvalidType()), m_result_ptr(arg_view.data()) {}
+
+  inline ParallelReduce(const FunctorType &arg_functor,
+                        MDRangePolicy arg_policy, const ReducerType &reducer)
+      : m_functor(arg_functor), m_mdr_policy(arg_policy),
+        m_policy(Policy(0, m_mdr_policy.m_num_tiles).set_chunk_size(1)),
+        m_reducer(reducer), m_result_ptr(reducer.view().data()) {}
+};
+} // namespace Impl
+} // namespace Kokkos
+
+namespace Kokkos {
+namespace Impl {
+
+template <class FunctorType, class... Traits>
+class ParallelScan<FunctorType, Kokkos::RangePolicy<Traits...>, Kokkos::HPX> {
+private:
+  typedef Kokkos::RangePolicy<Traits...> Policy;
+  typedef typename Policy::work_tag WorkTag;
+  typedef typename Policy::member_type Member;
+
+  typedef FunctorAnalysis<FunctorPatternInterface::SCAN, Policy, FunctorType>
+      Analysis;
+
+  typedef Kokkos::Impl::FunctorValueInit<FunctorType, WorkTag> ValueInit;
+  typedef Kokkos::Impl::FunctorValueJoin<FunctorType, WorkTag> ValueJoin;
+  typedef Kokkos::Impl::FunctorValueOps<FunctorType, WorkTag> ValueOps;
+
+  typedef typename Analysis::pointer_type pointer_type;
+  typedef typename Analysis::reference_type reference_type;
+  typedef typename Analysis::value_type value_type;
+
+  const FunctorType m_functor;
+  const Policy m_policy;
+
+  template <class TagType>
+  inline static
+      typename std::enable_if<std::is_same<TagType, void>::value>::type
+      exec_functor(const FunctorType &functor, const Member iwork,
+                   reference_type update, const bool final) {
+    functor(iwork, update, final);
+  }
+
+  template <class TagType>
+  inline static
+      typename std::enable_if<!std::is_same<TagType, void>::value>::type
+      exec_functor(const FunctorType &functor, const Member iwork,
+                   reference_type update, const bool final) {
+    const TagType t{};
+    functor(t, iwork, update, final);
+  }
+
+public:
+  inline void execute() const {
+    auto f = [this]() {
+      // TODO: hpx::get_num_worker_threads() is wrong. Should be pool threads.
+      // TODO: Should be bigger than pool threads (for uneven chunk sizes).
+      auto const num_worker_threads = hpx::get_num_worker_threads();
+
+      // This gets the size (in bytes) of the value we are reducing.
+      const int value_count = Analysis::value_count(m_functor);
+      const size_t value_size_bytes = 2 * Analysis::value_size(m_functor);
+
+      // Need to get or allocate a pointer for the results. This would
+      // normally come from an instance-specific scratch pool (only one
+      // operation at a time). (HPXExec* m_instance)
+
+      // NOTE: If we want to support multiple HPX backend parallel regions
+      // running simultaneously we can't reuse the scratch space (without
+      // additional checks).
+
+      // NOTE: We can't reuse this one because there might not be enough
+      // space for all threads. This only works on the serial backend.
+
+      // ptr = m_result_ptr;
+
+      std::vector<value_type> intermediate_results(num_worker_threads);
+      std::vector<value_type> intermediate_results2(num_worker_threads); // ??
+
+      //  NOTE: This structure is copied straight from the OpenMP backend. This
+      //  is not necessarily the fastest or most elegant way of writing this.
+      hpx::lcos::local::barrier barrier(num_worker_threads);
+      hpx::parallel::execution::static_chunk_size s(1);
+
+      hpx::parallel::for_loop(
+          hpx::parallel::execution::par.with(s), 0, num_worker_threads,
+          [this, &intermediate_results, &intermediate_results2, &barrier,
+           num_worker_threads, value_count](std::size_t const t) {
+            // This initializes the t:th reduction value to the appropriate
+            // init value based on the functor.
+            reference_type update_sum = ValueInit::init(
+                m_functor, (pointer_type)(&intermediate_results[t]));
+
+            // TODO: Use utilities that already exist.
+            const typename Policy::member_type b = m_policy.begin();
+            const typename Policy::member_type e = m_policy.end();
+            const typename Policy::member_type n = e - b;
+            const typename Policy::member_type chunk_size =
+                (n - 1) / num_worker_threads + 1;
+
+            const typename Policy::member_type b_local = b + t * chunk_size;
+            Member e_local = b + (t + 1) * chunk_size;
+            if (e_local > e) {
+              e_local = e;
+            };
+
+            std::cerr << "chunk range in thread "
+                      << hpx::get_worker_thread_num() << " is " << b_local
+                      << " to " << e_local << std::endl;
+
+            for (typename Policy::member_type i = b_local; i < e_local; ++i) {
+              exec_functor<WorkTag>(m_functor, i, update_sum, false);
+            }
+
+            barrier.wait();
+
+            // TODO: Use call_once?
+            if (t == 0) {
+              ValueInit::init(m_functor,
+                              (pointer_type)(&intermediate_results2[0]));
+
+              for (int i = 1; i < num_worker_threads; ++i) {
+                pointer_type ptr_prev =
+                    (pointer_type)(&intermediate_results[i - 1]);
+                pointer_type ptr2_prev =
+                    (pointer_type)(&intermediate_results2[i - 1]);
+
+                pointer_type ptr = (pointer_type)(&intermediate_results[i]);
+                pointer_type ptr2 = (pointer_type)(&intermediate_results2[i]);
+
+                for (int j = 0; j < value_count; ++j) {
+                  ptr2[j] = ptr2_prev[j];
+                }
+
+                ValueJoin::join(m_functor, ptr2, ptr_prev);
+              }
+            }
+
+            barrier.wait();
+
+            reference_type update_base =
+                ValueOps::reference((pointer_type)(&intermediate_results2[t]));
+
+            for (typename Policy::member_type i = b_local; i < e_local; ++i) {
+              exec_functor<WorkTag>(m_functor, i, update_base, true);
+            }
+          });
+
+      LOG("reduced value from worker thread " << 0 << " is "
+                                              << intermediate_results[0]);
+      for (int i = 1; i < num_worker_threads; ++i) {
+        LOG("reduced value from worker thread " << i << " is "
+                                                << intermediate_results[i]);
+      }
+    };
+
+    if (hpx::threads::get_self_ptr()) {
+      f();
+    } else {
+      hpx::threads::run_as_hpx_thread(f);
+    }
+  }
+
+  inline ParallelScan(const FunctorType &arg_functor, const Policy &arg_policy)
+      : m_functor(arg_functor), m_policy(arg_policy) {}
+};
+
+// ParallelScanWithTotal returns the final total (instead of void).
+template <class FunctorType, class ReturnType, class... Traits>
+class ParallelScanWithTotal<FunctorType, Kokkos::RangePolicy<Traits...>,
+                            ReturnType, Kokkos::HPX> {
+private:
+  typedef Kokkos::RangePolicy<Traits...> Policy;
+  typedef typename Policy::work_tag WorkTag;
+  typedef typename Policy::member_type Member;
+
+  typedef FunctorAnalysis<FunctorPatternInterface::SCAN, Policy, FunctorType>
+      Analysis;
+
+  typedef Kokkos::Impl::FunctorValueInit<FunctorType, WorkTag> ValueInit;
+  typedef Kokkos::Impl::FunctorValueJoin<FunctorType, WorkTag> ValueJoin;
+  typedef Kokkos::Impl::FunctorValueOps<FunctorType, WorkTag> ValueOps;
+
+  typedef typename Analysis::pointer_type pointer_type;
+  typedef typename Analysis::reference_type reference_type;
+  typedef typename Analysis::value_type value_type;
+
+  const FunctorType m_functor;
+  const Policy m_policy;
+  ReturnType &m_returnvalue;
+
+  template <class TagType>
+  inline static
+      typename std::enable_if<std::is_same<TagType, void>::value>::type
+      exec_functor(const FunctorType &functor, const Member iwork,
+                   reference_type update, const bool final) {
+    functor(iwork, update, final);
+  }
+
+  template <class TagType>
+  inline static
+      typename std::enable_if<!std::is_same<TagType, void>::value>::type
+      exec_functor(const FunctorType &functor, const Member iwork,
+                   reference_type update, const bool final) {
+    const TagType t{};
+    functor(t, iwork, update, final);
+  }
+
+public:
+  inline void execute() const {
+    auto f = [this]() {
+      // TODO: hpx::get_num_worker_threads() is wrong. Should be pool threads.
+      // TODO: Should be bigger than pool threads (for uneven chunk sizes).
+      auto const num_worker_threads = hpx::get_num_worker_threads();
+
+      // This gets the size (in bytes) of the value we are reducing.
+      const int value_count = Analysis::value_count(m_functor);
+      const size_t value_size_bytes = 2 * Analysis::value_size(m_functor);
+
+      // Need to get or allocate a pointer for the results. This would
+      // normally come from an instance-specific scratch pool (only one
+      // operation at a time). (HPXExec* m_instance)
+
+      // NOTE: If we want to support multiple HPX backend parallel regions
+      // running simultaneously we can't reuse the scratch space (without
+      // additional checks).
+
+      // NOTE: We can't reuse this one because there might not be enough
+      // space for all threads. This only works on the serial backend.
+
+      // ptr = m_result_ptr;
+
+      std::vector<value_type> intermediate_results(num_worker_threads);
+      std::vector<value_type> intermediate_results2(num_worker_threads); // ??
+
+      //  NOTE: This structure is copied straight from the OpenMP backend. This
+      //  is not necessarily the fastest or most elegant way of writing this.
+      hpx::lcos::local::barrier barrier(num_worker_threads);
+      hpx::parallel::execution::static_chunk_size s(1);
+
+      hpx::parallel::for_loop(
+          hpx::parallel::execution::par.with(s), 0, num_worker_threads,
+          [this, &intermediate_results, &intermediate_results2, &barrier,
+           num_worker_threads, value_count](std::size_t const t) {
+            // This initializes the t:th reduction value to the appropriate
+            // init value based on the functor.
+            reference_type update_sum = ValueInit::init(
+                m_functor, (pointer_type)(&intermediate_results[t]));
+
+            // TODO: Use utilities that already exist.
+            const typename Policy::member_type b = m_policy.begin();
+            const typename Policy::member_type e = m_policy.end();
+            const typename Policy::member_type n = e - b;
+            const typename Policy::member_type chunk_size =
+                (n - 1) / num_worker_threads + 1;
+
+            const typename Policy::member_type b_local = b + t * chunk_size;
+            Member e_local = b + (t + 1) * chunk_size;
+            if (e_local > e) {
+              e_local = e;
+            };
+
+            LOG("chunk range in thread " << hpx::get_worker_thread_num()
+                                         << " is " << b_local << " to "
+                                         << e_local);
+
+            for (typename Policy::member_type i = b_local; i < e_local; ++i) {
+              exec_functor<WorkTag>(m_functor, i, update_sum, false);
+            }
+
+            barrier.wait();
+
+            if (t == 0) {
+              ValueInit::init(m_functor,
+                              (pointer_type)(&intermediate_results2[0]));
+
+              for (int i = 1; i < num_worker_threads; ++i) {
+                pointer_type ptr_prev =
+                    (pointer_type)(&intermediate_results[i - 1]);
+                pointer_type ptr2_prev =
+                    (pointer_type)(&intermediate_results2[i - 1]);
+
+                pointer_type ptr = (pointer_type)(&intermediate_results[i]);
+                pointer_type ptr2 = (pointer_type)(&intermediate_results2[i]);
+
+                for (int j = 0; j < value_count; ++j) {
+                  ptr2[j] = ptr2_prev[j];
+                }
+
+                ValueJoin::join(m_functor, ptr2, ptr_prev);
+              }
+            }
+
+            barrier.wait();
+
+            reference_type update_base =
+                ValueOps::reference((pointer_type)(&intermediate_results2[t]));
+
+            for (typename Policy::member_type i = b_local; i < e_local; ++i) {
+              exec_functor<WorkTag>(m_functor, i, update_base, true);
+            }
+
+            if (t == num_worker_threads - 1) {
+              m_returnvalue = update_base;
+            }
+          });
+
+      LOG("reduced value from worker thread " << 0 << " is "
+                                              << intermediate_results[0]);
+      for (int i = 1; i < num_worker_threads; ++i) {
+        LOG("reduced value from worker thread " << i << " is "
+                                                << intermediate_results[i]);
+      }
+    };
+
+    if (hpx::threads::get_self_ptr()) {
+      f();
+    } else {
+      hpx::threads::run_as_hpx_thread(f);
+    }
+  }
+
+  inline ParallelScanWithTotal(const FunctorType &arg_functor,
+                               const Policy &arg_policy,
+                               ReturnType &arg_returnvalue)
+      : m_functor(arg_functor), m_policy(arg_policy),
+        m_returnvalue(arg_returnvalue) {}
+};
+} // namespace Impl
+} // namespace Kokkos
+
+namespace Kokkos {
+namespace Impl {
+// TODO
+template <class FunctorType, class... Properties>
+class ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>, Kokkos::HPX> {
+private:
+  // TODO: Should not be needed. Only used to define a local constant.
+  // enum { TEAM_REDUCE_SIZE = 512 };
+
+  typedef TeamPolicyInternal<Kokkos::HPX, Properties...> Policy;
+  typedef typename Policy::work_tag WorkTag;
+  typedef typename Policy::member_type Member;
+  typedef Kokkos::HostSpace memory_space;
+
+  const FunctorType m_functor;
+  const Policy m_policy;
+  const int m_league;
+  const int m_shared; // NOTE: Is this the size of shared scratch memory? Yes.
+                      // But per team? Per thread?
+
+  template <class TagType>
+  inline static
+      typename std::enable_if<std::is_same<TagType, void>::value>::type
+      exec_functor(const FunctorType &functor, Member &&member) {
+    functor(member);
+  }
+
+  template <class TagType>
+  inline static
+      typename std::enable_if<!std::is_same<TagType, void>::value>::type
+      exec_functor(const FunctorType &functor, Member &&member) {
+    const TagType t{};
+    functor(t, member);
+  }
+
+public:
+  inline void execute() const {
+    // Kokkos::abort("ParallelFor<TeamPolicy>");
+    auto f = [this]() {
+      // TODO: Should distribute single teams onto NUMA domains.
+      // TODO: hpx::get_num_worker_threads() is wrong. Should be pool threads.
+      auto const team_size = m_policy.team_size();
+
+      // TODO: What is team_iter? Maximum number of iterations each team will
+      // take...?
+
+      // if (m_policy.team_iter() < team_size) {
+      //   team_size = m_policy.team_iter();
+      // }
+      auto const league_size = m_policy.league_size();
+
+      auto hpx_policy = hpx::parallel::execution::par.with(
+          hpx::parallel::execution::static_chunk_size(1));
+
+      // TODO: Would like to use organize_team here to set up ... but it yields
+      // OS threads. Is there a way to use HPX synchronization primitives
+      // instead? Yes. Previous comment not true. Only OpenMP and Serial
+      // backends use HostThreadTeamData. We will use HPXTeamMember.
+
+      // TODO: Allocate scratch space: shared, team and thread. Should allocate
+      // separate team scratch memories for each thread team so that multiple
+      // teams and parallel for loops can be in flight at the same time.
+
+      // TODO: Should allocate thread data per thread? Necessary? Should
+      // allocate per NUMA domain.
+
+      // TODO: Bogus value. How much space do I actually need to allocate?
+      // team_shared_mem_size + team_size * thread_mem_size + ???.
+      // const int scratch_size = 123123;
+      // TODO: Wrap in smart pointer with custom deleter.
+      // void *scratch = space.allocate();
+      // std::unique_ptr<> scratch(space.allocate(m_policy.scratch_size(0)),
+      //                           [space](void *ptr) { space.deallocate(ptr);
+      //                           });
+
+      // TODO: A better alternative might be:
+      // for (0..league_size) {
+      //   for (0..team_size) {
+      //     futures.push_back(hpx::async(blah, team_rank, league_rank)):
+      //   }
+      // }
+      // wait_all(futures);
+      //
+      // Otherwise the outer loop doesn't do much work.
+
+      // May have to limit how many teams can be in flight simultaneously.
+      // Potentially requires a lot of memory if the league size is large. More
+      // than one team in flight can be beneficial if iterations differ in
+      // length, but too many will only waste memory.
+
+      // There is no memory shared across all teams. If that's needed simply
+      // allocate a view before starting the parallel region.
+
+      hpx::parallel::for_loop(
+          hpx_policy, 0, league_size,
+          [this, league_size, team_size,
+           hpx_policy](std::size_t const league_rank) {
+            std::shared_ptr<hpx::lcos::local::barrier> team_barrier(
+                new hpx::lcos::local::barrier(team_size));
+            // TODO: These memory chunks could all be allocated together.
+
+            // This memory is shared across all threads in a team. This one is
+            // used for user-facing scratch memory. Need to have two levels even
+            // though the memory comes from the same hierarchy. The two levels
+            // have to at least point to different memory.
+            // m_policy.scratch_size(level) returns team_shared_bytes +
+            // team_size * thread_local_bytes.
+            const int scratch_size =
+                m_policy.scratch_size(0) + m_policy.scratch_size(1);
+            std::vector<char> scratch(scratch_size);
+            char *scratch_data = scratch.data();
+
+            printf("ParallelFor<TeamPolicy>: league_rank = %ul, scratch_data = "
+                   "%p, scratch_size = %d\n",
+                   league_rank, scratch_data, scratch_size);
+
+            // It's allowed to do a team_reduce/team_scan inside a parallel_for.
+            // So we need to allocate temporary memory for a reduction. This
+            // memory is shared across all threads in a team. We have a fixed
+            // upper limit on the space allocated for a reduction.
+            const std::size_t max_thread_reduce_bytes = 512; // TODO: Is this
+                                                             // enough? Dynamic?
+                                                             // Move to class
+                                                             // scope.
+            const int reduce_size =
+                max_thread_reduce_bytes * m_policy.team_size();
+            std::vector<char> reduce_buffer(reduce_size);
+            char *reduce_buffer_data = reduce_buffer.data();
+
+            hpx::parallel::for_loop(
+                hpx_policy, 0, team_size,
+                [this, league_rank, league_size, team_size, scratch_data,
+                 scratch_size, reduce_buffer_data, reduce_size,
+                 team_barrier](std::size_t const team_rank) {
+                  exec_functor<WorkTag>(m_functor,
+                                        Member(m_policy, team_rank, league_rank,
+                                               scratch_data, scratch_size,
+                                               reduce_buffer_data, reduce_size,
+                                               team_barrier));
+                });
+          });
+    };
+
+    if (hpx::threads::get_self_ptr()) {
+      f();
+    } else {
+      hpx::threads::run_as_hpx_thread(f);
+    }
+  }
+
+  ParallelFor(const FunctorType &arg_functor, const Policy &arg_policy)
+      : m_functor(arg_functor), m_policy(arg_policy),
+        m_league(arg_policy.league_size()),
+        m_shared(arg_policy.scratch_size(0) + arg_policy.scratch_size(1) +
+                 FunctorTeamShmemSize<FunctorType>::value(arg_functor, 1)) {}
+};
+
+// TODO
+template <class FunctorType, class ReducerType, class... Properties>
+class ParallelReduce<FunctorType, Kokkos::TeamPolicy<Properties...>,
+                     ReducerType, Kokkos::HPX> {
+private:
+  // TODO: Should not be needed. Only used to define a local constant. But...
+  // may be needed for old code. We apparently set a hard maximum size on some
+  // of the scratch space. Why? enum { TEAM_REDUCE_SIZE = 512 };
+
+  typedef TeamPolicyInternal<Kokkos::HPX, Properties...> Policy;
+
+  typedef FunctorAnalysis<FunctorPatternInterface::REDUCE, Policy, FunctorType>
+      Analysis;
+
+  typedef typename Policy::member_type Member;
+  typedef typename Policy::work_tag WorkTag;
+
+  typedef Kokkos::Impl::if_c<std::is_same<InvalidType, ReducerType>::value,
+                             FunctorType, ReducerType>
+      ReducerConditional;
+  typedef typename ReducerConditional::type ReducerTypeFwd;
+  typedef
+      typename Kokkos::Impl::if_c<std::is_same<InvalidType, ReducerType>::value,
+                                  WorkTag, void>::type WorkTagFwd;
+
+  typedef Kokkos::Impl::FunctorValueInit<ReducerTypeFwd, WorkTagFwd> ValueInit;
+
+  typedef typename Analysis::pointer_type pointer_type;
+  typedef typename Analysis::reference_type reference_type;
+
+  const FunctorType m_functor;
+  const int m_league;
+  const ReducerType m_reducer;
+  pointer_type m_result_ptr;
+  const int m_shared;
+
+public:
+  inline void execute() const {
+    Kokkos::abort("ParallelReduce<TeamPolicy>: execute\n");
+  }
+
+  template <class ViewType>
+  ParallelReduce(
+      const FunctorType &arg_functor, const Policy &arg_policy,
+      const ViewType &arg_result,
+      typename std::enable_if<Kokkos::is_view<ViewType>::value &&
+                                  !Kokkos::is_reducer_type<ReducerType>::value,
+                              void *>::type = NULL)
+      : m_functor(arg_functor), m_league(arg_policy.league_size()),
+        m_reducer(InvalidType()), m_result_ptr(arg_result.data()),
+        m_shared(arg_policy.scratch_size(0) + arg_policy.scratch_size(1) +
+                 FunctorTeamShmemSize<FunctorType>::value(m_functor, 1)) {}
+
+  inline ParallelReduce(const FunctorType &arg_functor, Policy arg_policy,
+                        const ReducerType &reducer)
+      : m_functor(arg_functor), m_league(arg_policy.league_size()),
+        m_reducer(reducer), m_result_ptr(reducer.view().data()),
+        m_shared(arg_policy.scratch_size(0) + arg_policy.scratch_size(1) +
+                 FunctorTeamShmemSize<FunctorType>::value(arg_functor, 1)) {}
+};
+} // namespace Impl
+} // namespace Kokkos
+
+// NOTE: This implements the parallel dispatch functions for use within a
+// parallel region.
+namespace Kokkos {
+
+// These create iteration boundaries for nested parallelism.
+template <typename iType>
+KOKKOS_INLINE_FUNCTION
+    Impl::TeamThreadRangeBoundariesStruct<iType, Impl::HPXTeamMember>
+    TeamThreadRange(const Impl::HPXTeamMember &thread, const iType &count) {
+  return Impl::TeamThreadRangeBoundariesStruct<iType, Impl::HPXTeamMember>(
+      thread, count);
+}
+
+template <typename iType1, typename iType2>
+KOKKOS_INLINE_FUNCTION Impl::TeamThreadRangeBoundariesStruct<
+    typename std::common_type<iType1, iType2>::type, Impl::HPXTeamMember>
+TeamThreadRange(const Impl::HPXTeamMember &thread, const iType1 &begin,
+                const iType2 &end) {
+  typedef typename std::common_type<iType1, iType2>::type iType;
+  return Impl::TeamThreadRangeBoundariesStruct<iType, Impl::HPXTeamMember>(
+      thread, iType(begin), iType(end));
+}
+
+template <typename iType>
+KOKKOS_INLINE_FUNCTION
+    Impl::ThreadVectorRangeBoundariesStruct<iType, Impl::HPXTeamMember>
+    ThreadVectorRange(const Impl::HPXTeamMember &thread, const iType &count) {
+  return Impl::ThreadVectorRangeBoundariesStruct<iType, Impl::HPXTeamMember>(
+      thread, count);
+}
+
+template <typename iType>
+KOKKOS_INLINE_FUNCTION
+    Impl::ThreadVectorRangeBoundariesStruct<iType, Impl::HPXTeamMember>
+    ThreadVectorRange(const Impl::HPXTeamMember &thread, const iType &arg_begin,
+                      const iType &arg_end) {
+  return Impl::ThreadVectorRangeBoundariesStruct<iType, Impl::HPXTeamMember>(
+      thread, arg_begin, arg_end);
+}
+
+KOKKOS_INLINE_FUNCTION
+Impl::ThreadSingleStruct<Impl::HPXTeamMember>
+PerTeam(const Impl::HPXTeamMember &thread) {
+  return Impl::ThreadSingleStruct<Impl::HPXTeamMember>(thread);
+}
+
+KOKKOS_INLINE_FUNCTION
+Impl::VectorSingleStruct<Impl::HPXTeamMember>
+PerThread(const Impl::HPXTeamMember &thread) {
+  return Impl::VectorSingleStruct<Impl::HPXTeamMember>(thread);
+}
+
+/** \brief  Inter-thread parallel_for. Executes lambda(iType i) for each
+ * i=0..N-1.
+ *
+ * The range i=0..N-1 is mapped to all threads of the the calling thread team.
+ * This functionality requires C++11 support.*/
+template <typename iType, class Lambda>
+KOKKOS_INLINE_FUNCTION void parallel_for(
+    const Impl::TeamThreadRangeBoundariesStruct<iType, Impl::HPXTeamMember>
+        &loop_boundaries,
+    const Lambda &lambda) {
+  for (iType i = loop_boundaries.start; i < loop_boundaries.end;
+       i += loop_boundaries.increment)
+    lambda(i);
+}
+
+/** \brief  Inter-thread vector parallel_reduce. Executes lambda(iType i,
+ * ValueType & val) for each i=0..N-1.
+ *
+ * The range i=0..N-1 is mapped to all threads of the the calling thread team
+ * and a summation of val is performed and put into result. This functionality
+ * requires C++11 support.*/
+template <typename iType, class Lambda, typename ValueType>
+KOKKOS_INLINE_FUNCTION void parallel_reduce(
+    const Impl::TeamThreadRangeBoundariesStruct<iType, Impl::HPXTeamMember>
+        &loop_boundaries,
+    const Lambda &lambda, ValueType &result) {
+
+  result = ValueType();
+
+  for (iType i = loop_boundaries.start; i < loop_boundaries.end;
+       i += loop_boundaries.increment) {
+    ValueType tmp = ValueType();
+    lambda(i, tmp);
+    result += tmp;
+  }
+
+  result =
+      loop_boundaries.thread.team_reduce(result, Impl::JoinAdd<ValueType>());
+}
+
+/** \brief  Intra-thread vector parallel_reduce. Executes lambda(iType i,
+ * ValueType & val) for each i=0..N-1.
+ *
+ * The range i=0..N-1 is mapped to all vector lanes of the the calling thread
+ * and a reduction of val is performed using JoinType(ValueType& val, const
+ * ValueType& update) and put into init_result. The input value of init_result
+ * is used as initializer for temporary variables of ValueType. Therefore the
+ * input value should be the neutral element with respect to the join operation
+ * (e.g. '0 for +-' or '1 for *'). This functionality requires C++11 support.*/
+template <typename iType, class Lambda, typename ValueType, class JoinType>
+KOKKOS_INLINE_FUNCTION void parallel_reduce(
+    const Impl::TeamThreadRangeBoundariesStruct<iType, Impl::HPXTeamMember>
+        &loop_boundaries,
+    const Lambda &lambda, const JoinType &join, ValueType &init_result) {
+
+  ValueType result = init_result;
+
+  for (iType i = loop_boundaries.start; i < loop_boundaries.end;
+       i += loop_boundaries.increment) {
+    ValueType tmp = ValueType();
+    lambda(i, tmp);
+    join(result, tmp);
+  }
+
+  init_result = loop_boundaries.thread.team_reduce(
+      result, Impl::JoinLambdaAdapter<ValueType, JoinType>(join));
+}
+
+/** \brief  Intra-thread vector parallel_for. Executes lambda(iType i) for each
+ * i=0..N-1.
+ *
+ * The range i=0..N-1 is mapped to all vector lanes of the the calling thread.
+ * This functionality requires C++11 support.*/
+template <typename iType, class Lambda>
+KOKKOS_INLINE_FUNCTION void parallel_for(
+    const Impl::ThreadVectorRangeBoundariesStruct<iType, Impl::HPXTeamMember>
+        &loop_boundaries,
+    const Lambda &lambda) {
+#ifdef KOKKOS_ENABLE_PRAGMA_IVDEP
+#pragma ivdep
+#endif
+  for (iType i = loop_boundaries.start; i < loop_boundaries.end;
+       i += loop_boundaries.increment)
+    lambda(i);
+}
+
+/** \brief  Intra-thread vector parallel_reduce. Executes lambda(iType i,
+ * ValueType & val) for each i=0..N-1.
+ *
+ * The range i=0..N-1 is mapped to all vector lanes of the the calling thread
+ * and a summation of val is performed and put into result. This functionality
+ * requires C++11 support.*/
+template <typename iType, class Lambda, typename ValueType>
+KOKKOS_INLINE_FUNCTION void parallel_reduce(
+    const Impl::ThreadVectorRangeBoundariesStruct<iType, Impl::HPXTeamMember>
+        &loop_boundaries,
+    const Lambda &lambda, ValueType &result) {
+  result = ValueType();
+#ifdef KOKKOS_ENABLE_PRAGMA_IVDEP
+#pragma ivdep
+#endif
+  for (iType i = loop_boundaries.start; i < loop_boundaries.end;
+       i += loop_boundaries.increment) {
+    ValueType tmp = ValueType();
+    lambda(i, tmp);
+    result += tmp;
+  }
+}
+
+/** \brief  Intra-thread vector parallel_reduce. Executes lambda(iType i,
+ * ValueType & val) for each i=0..N-1.
+ *
+ * The range i=0..N-1 is mapped to all vector lanes of the the calling thread
+ * and a reduction of val is performed using JoinType(ValueType& val, const
+ * ValueType& update) and put into init_result. The input value of init_result
+ * is used as initializer for temporary variables of ValueType. Therefore the
+ * input value should be the neutral element with respect to the join operation
+ * (e.g. '0 for +-' or '1 for *'). This functionality requires C++11 support.*/
+template <typename iType, class Lambda, typename ValueType, class JoinType>
+KOKKOS_INLINE_FUNCTION void parallel_reduce(
+    const Impl::ThreadVectorRangeBoundariesStruct<iType, Impl::HPXTeamMember>
+        &loop_boundaries,
+    const Lambda &lambda, const JoinType &join, ValueType &init_result) {
+
+  ValueType result = init_result;
+#ifdef KOKKOS_ENABLE_PRAGMA_IVDEP
+#pragma ivdep
+#endif
+  for (iType i = loop_boundaries.start; i < loop_boundaries.end;
+       i += loop_boundaries.increment) {
+    ValueType tmp = ValueType();
+    lambda(i, tmp);
+    join(result, tmp);
+  }
+  init_result = result;
+}
+
+// TODO
+template <typename iType, class Lambda, typename ReducerType>
+KOKKOS_INLINE_FUNCTION void parallel_reduce(
+    const Impl::TeamThreadRangeBoundariesStruct<iType, Impl::HPXTeamMember>
+        &loop_boundaries,
+    const Lambda &lambda, const ReducerType &reducer) {}
+
+// TODO
+template <typename iType, class Lambda, typename ReducerType>
+KOKKOS_INLINE_FUNCTION void parallel_reduce(
+    const Impl::ThreadVectorRangeBoundariesStruct<iType, Impl::HPXTeamMember>
+        &loop_boundaries,
+    const Lambda &lambda, const ReducerType &reducer) {}
+
+/** \brief  Intra-thread vector parallel exclusive prefix sum. Executes
+ * lambda(iType i, ValueType & val, bool final) for each i=0..N-1.
+ *
+ * The range i=0..N-1 is mapped to all vector lanes in the thread and a scan
+ * operation is performed. Depending on the target execution space the operator
+ * might be called twice: once with final=false and once with final=true. When
+ * final==true val contains the prefix sum value. The contribution of this "i"
+ * needs to be added to val no matter whether final==true or not. In a serial
+ * execution (i.e. team_size==1) the operator is only called once with
+ * final==true. Scan_val will be set to the final sum value over all vector
+ * lanes. This functionality requires C++11 support.*/
+template <typename iType, class FunctorType>
+KOKKOS_INLINE_FUNCTION void parallel_scan(
+    const Impl::ThreadVectorRangeBoundariesStruct<iType, Impl::HPXTeamMember>
+        &loop_boundaries,
+    const FunctorType &lambda) {
+
+  typedef Kokkos::Impl::FunctorValueTraits<FunctorType, void> ValueTraits;
+  typedef typename ValueTraits::value_type value_type;
+
+  value_type scan_val = value_type();
+
+#ifdef KOKKOS_ENABLE_PRAGMA_IVDEP
+#pragma ivdep
+#endif
+  for (iType i = loop_boundaries.start; i < loop_boundaries.end;
+       i += loop_boundaries.increment) {
+    lambda(i, scan_val, true);
+  }
+}
+
+template <class FunctorType>
+KOKKOS_INLINE_FUNCTION void
+single(const Impl::VectorSingleStruct<Impl::HPXTeamMember> &single_struct,
+       const FunctorType &lambda) {
+  lambda();
+}
+
+template <class FunctorType>
+KOKKOS_INLINE_FUNCTION void
+single(const Impl::ThreadSingleStruct<Impl::HPXTeamMember> &single_struct,
+       const FunctorType &lambda) {
+  if (single_struct.team_member.team_rank() == 0)
+    lambda();
+}
+
+template <class FunctorType, class ValueType>
+KOKKOS_INLINE_FUNCTION void
+single(const Impl::VectorSingleStruct<Impl::HPXTeamMember> &single_struct,
+       const FunctorType &lambda, ValueType &val) {
+  lambda(val);
+}
+
+template <class FunctorType, class ValueType>
+KOKKOS_INLINE_FUNCTION void
+single(const Impl::ThreadSingleStruct<Impl::HPXTeamMember> &single_struct,
+       const FunctorType &lambda, ValueType &val) {
+  if (single_struct.team_member.team_rank() == 0) {
+    lambda(val);
+  }
+  single_struct.team_member.team_broadcast(val, 0);
+}
+
+} // namespace Kokkos
+
+namespace Kokkos {
+namespace Impl {
+
+// TODO: This should only be needed if we use HostThreadTeamData. But we don't.
+// class HostThreadTeamDataSingleton : private HostThreadTeamData {
+// public:
+// TODO: Completely wrong. What is the singleton used for?
+// static HostThreadTeamData &singleton() {
+// throw std::runtime_error(
+// "HPX HostThreadTeamDataSingleton::singleton not implemented");
+// }
+// };
+} // namespace Impl
+} // namespace Kokkos
+
+namespace Kokkos {
+namespace Impl {
+// TODO: Does not compile at all.
+/*
+template <> class TaskQueueSpecialization<Kokkos::HPX> {
+public:
+  using execution_space = Kokkos::HPX;
+  using queue_type = Kokkos::Impl::TaskQueue<execution_space>;
+  using task_base_type = Kokkos::Impl::TaskBase<void, void, void>;
+  using member_type = Kokkos::Impl::HPXTeamMember;
+  using memory_space = Kokkos::HostSpace;
+
+  static void iff_single_thread_recursive_execute(queue_type *const) {}
+
+  static void execute(queue_type *const) {}
+
+  template <typename TaskType>
+  static typename TaskType::function_type get_function_pointer() {
+    return TaskType::apply;
+  }
+};
+
+// TODO: This one looks like it's out of context...
+extern template class TaskQueue<Kokkos::HPX>;
+*/
+} // namespace Impl
+} // namespace Kokkos
+
+namespace Kokkos {
+namespace Impl {
+// TODO: Does not compile at all.
+/*
+template <class FunctorType, class... Traits>
+class ParallelFor<FunctorType, Kokkos::WorkGraphPolicy<Traits...>,
+              Kokkos::HPX> {
+public:
+inline void execute() {}
+inline ParallelFor(const FunctorType &arg_functor, const Policy &arg_policy)
+  : m_policy(arg_policy), m_functor(arg_functor) {}
+};
+*/
+} // namespace Impl
+} // namespace Kokkos
+
 #endif /* #if defined( KOKKOS_ENABLE_HPX ) */
 #endif /* #ifndef KOKKOS_HPX_HPP */
