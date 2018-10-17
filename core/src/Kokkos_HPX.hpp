@@ -1946,11 +1946,8 @@ public:
 } // namespace Impl
 } // namespace Kokkos
 
-// NOTE: This implements the parallel dispatch functions for use within a
-// parallel region.
 namespace Kokkos {
 
-// These create iteration boundaries for nested parallelism.
 template <typename iType>
 KOKKOS_INLINE_FUNCTION
     Impl::TeamThreadRangeBoundariesStruct<iType, Impl::HPXTeamMember>
@@ -2135,19 +2132,39 @@ KOKKOS_INLINE_FUNCTION void parallel_reduce(
   init_result = result;
 }
 
-// TODO
 template <typename iType, class Lambda, typename ReducerType>
 KOKKOS_INLINE_FUNCTION void parallel_reduce(
     const Impl::TeamThreadRangeBoundariesStruct<iType, Impl::HPXTeamMember>
         &loop_boundaries,
-    const Lambda &lambda, const ReducerType &reducer) {}
+    const Lambda &lambda, const ReducerType &reducer) {
+  reducer.init(reducer.reference());
 
-// TODO
+#ifdef KOKKOS_ENABLE_PRAGMA_IVDEP
+#pragma ivdep
+#endif
+  for (iType i = loop_boundaries.start; i < loop_boundaries.end;
+       i += loop_boundaries.increment) {
+    lambda(i, reducer.reference());
+  }
+
+  loop_boundaries.thread.team_reduce(reducer);
+}
+
 template <typename iType, class Lambda, typename ReducerType>
 KOKKOS_INLINE_FUNCTION void parallel_reduce(
     const Impl::ThreadVectorRangeBoundariesStruct<iType, Impl::HPXTeamMember>
         &loop_boundaries,
-    const Lambda &lambda, const ReducerType &reducer) {}
+    const Lambda &lambda, const ReducerType &reducer) {
+  reducer.init(reducer.reference());
+
+#ifdef KOKKOS_ENABLE_PRAGMA_IVDEP
+#pragma ivdep
+#endif
+  for (iType i = loop_boundaries.start; i < loop_boundaries.end;
+       i += loop_boundaries.increment) {
+    lambda(i, reducer.reference());
+  }
+}
 
 /** \brief  Intra-thread vector parallel exclusive prefix sum. Executes
  * lambda(iType i, ValueType & val, bool final) for each i=0..N-1.
