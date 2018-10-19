@@ -275,61 +275,6 @@ struct VerifyExecutionCanAccessMemorySpace<Kokkos::HPX::memory_space,
 } // namespace Impl
 } // namespace Kokkos
 
-// TODO: Is the HPX/HPXExec split necessary? How is it used in other backends?
-// Serial backend does not have the split. Others have it.
-
-// It's meant to hold instance specific data, such as scratch space allocations.
-// Each backend is free to have or not have one. In the case of HPX there is not
-// much value because we want to use a single HPX runtime, and we want it to be
-// possible to call multiple Kokkos parallel functions at the same time. All
-// allocations should thus be local to the particular invocation (meaning to the
-// team member type).
-namespace Kokkos {
-namespace Impl {
-class HPXExec {
-public:
-  friend class Kokkos::HPX;
-  // enum { MAX_THREAD_COUNT = 512 };
-  // TODO: What thread data? Data for each thread. Not really necessary for HPX.
-  // void clear_thread_data() {}
-  // TODO: Is this a resource partition? Check that it satisfies some criteria?
-  // static void validate_partition(const int nthreads, int &num_partitions,
-  //                                int &partition_size) {}
-
-private:
-  HPXExec(int arg_pool_size) {}
-
-  // Don't want to keep team member data globally. Do it locally for each
-  // invocation. More allocations but can overlap parallel regions.
-  ~HPXExec() { /*clear_thread_data();*/
-  }
-
-public:
-  // TODO: What assumptions can be made here? HPX allows arbitrary nesting.
-  // Does this mean all threads can be master threads?
-  static void verify_is_master(const char *const) {}
-
-  // TODO: Thread = worker thread or lightweight thread i.e. task? Seems to be
-  // worker thread. This one isn't really needed because we'll do all the
-  // allocations locally.
-  // void resize_thread_data(size_t pool_reduce_bytes, size_t team_reduce_bytes,
-  //                         size_t team_shared_bytes, size_t
-  //                         thread_local_bytes) {
-  // }
-
-  // This one isn't needed because we'll be doing the allocations locally.
-  // inline HostThreadTeamData *get_thread_data() const noexcept {
-  //   return m_pool[hpx::get_worker_thread_num()];
-  // }
-
-  // This one isn't needed because we'll be doing the allocations locally.
-  // inline HostThreadTeamData *get_thread_data(int i) const noexcept {
-  //   return m_pool[i];
-  // }
-};
-
-} // namespace Impl
-} // namespace Kokkos
 
 // TODO: The use case of a unique token is not clear. Only used in very few
 // places (scatter view?).
