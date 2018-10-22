@@ -103,7 +103,7 @@ template <typename F> inline void run_hpx_function(F &&f) {
   if (hpx::threads::get_self_ptr()) {
     f();
   } else {
-      hpx::threads::run_as_hpx_thread(std::move(f));
+    hpx::threads::run_as_hpx_thread(std::move(f));
   }
 }
 } // namespace hpx
@@ -256,7 +256,11 @@ public:
 
   inline static int impl_thread_pool_size(int depth) {
     LOG("HPX::impl_thread_pool_size");
-    return 0;
+    if (depth == 0) {
+      return impl_thread_pool_size();
+    } else {
+      return 1;
+    }
   }
 
   inline static int impl_max_hardware_threads() noexcept {
@@ -794,6 +798,20 @@ public:
 namespace Kokkos {
 namespace Impl {
 
+template <typename T> struct reference_type_cast;
+
+template <typename T> struct reference_type_cast<T *> {
+  KOKKOS_INLINE_FUNCTION constexpr T *operator()(char *ptr) const noexcept {
+    return reinterpret_cast<T *>(ptr);
+  }
+};
+
+template <typename T> struct reference_type_cast<T &> {
+  KOKKOS_INLINE_FUNCTION constexpr T &operator()(char *ptr) const noexcept {
+    return *(reinterpret_cast<T *>(ptr));
+  }
+};
+
 template <class FunctorType, class ReducerType, class... Traits>
 class ParallelReduce<FunctorType, Kokkos::RangePolicy<Traits...>, ReducerType,
                      Kokkos::HPX> {
@@ -873,83 +891,109 @@ public:
 
       // NOTE: value_type is not always the right size.
       // std::vector<value_type> intermediate_results(num_worker_threads);
-      std::vector<char> intermediate_results(num_worker_threads *
-                                             value_size_bytes);
+      std::unique_ptr<char[]> intermediate_results(
+          new char[num_worker_threads * value_size_bytes]);
 
-      // Explicit version, spawn num_worker_threads task which do the work.
-      hpx::parallel::execution::static_chunk_size s(1);
-      hpx::parallel::for_loop(
-          hpx::parallel::execution::par.with(s), 0, num_worker_threads,
-          [this, &intermediate_results, value_size_bytes,
-           num_worker_threads](std::size_t const t) {
-            // This initializes the t:th reduction value to the appropriate
-            // init value based on the functor.
-            // std::cout << "ParallelReduce::execute init" << std::endl;
-            reference_type update = ValueInit::init(
-                ReducerConditional::select(m_functor, m_reducer),
-                (pointer_type)(&intermediate_results[t * value_size_bytes]));
+      // NOTE: std version attempt
+      // auto range = boost::irange(m_policy.begin(), m_policy.end());
+      // reference_type initial =
+      //     ValueInit::init(ReducerConditional::select(m_functor, m_reducer),
+      //                     (pointer_type)(&intermediate_results[0]));
 
-            // TODO: Use utilities that already exist.
+      // hpx::parallel::transform_reduce(
+      //     hpx::parallel::execution::par.with(
+      //         hpx::parallel::execution::static_chunk_size(
+      //             m_policy.chunk_size())),
 
-            // TODO: This is the static distribution. It should use a
-            // granularity of chunk_size to ensure that chunk_size iterations
-            // run on the same thread. Not clear how the dynamic one fits in
-            // here.
-            const typename Policy::member_type b = m_policy.begin();
-            const typename Policy::member_type e = m_policy.end();
-            const typename Policy::member_type n = e - b;
-            // std::cout << "b = " << b << ", e = " << e << ", n = " << n
-            //           << std::endl;
-            if (n == 0) {
-              return 0;
-            }
-            const typename Policy::member_type chunk_size =
-                (n - 1) / num_worker_threads + 1;
+      //     range.begin(), range.end(), initial,
+      //     [&m_functor](Policy::member_type x, Policy::member_type y) {
+      //     },
 
-            const typename Policy::member_type b_local = b + t * chunk_size;
-            Member e_local = b + (t + 1) * chunk_size;
-            if (e_local > e) {
-              e_local = e;
-            };
+      //     [&m_functor](Policy::member_type i) {
+      //         exec_functor<WorkTag>(m_functor, i, update);
+      //     }
+      //     ); // TODO: Handle non-copyable types.
 
-            LOG("chunk range in thread " << hpx::get_worker_thread_num()
-                                         << " is " << b_local << " to "
-                                         << e_local);
+      // NOTE: Explicit version, spawn num_worker_threads task which do the
+      // work. hpx::parallel::execution::static_chunk_size s(1);
 
-            // std::cout << "ParallelReduce::execute exec_functor, b_local = "
-            //           << b_local << ", e_local = " << e_local << std::endl;
-            for (typename Policy::member_type i = b_local; i < e_local; ++i) {
-              exec_functor<WorkTag>(m_functor, i, update);
-            }
-
-            LOG("intermediate result from worker thread "
-                << hpx::get_worker_thread_num() << " is " << update);
-          });
-
-      // Alternative dynamic version, use chunk size to split up range into
-      // tasks. Write results into one slot for each worker thread.
-
-      // Initialize the values outside the for loop.
-      // for (std::size_t t = 0; t < num_worker_threads; ++t) {
-      //   reference_type update =
-      //       ValueInit::init(ReducerConditional::select(m_functor, m_reducer),
-      //                       (pointer_type)(&intermediate_results[t]));
-      // }
-
-      // // Do the actual reduction on multiple threads. Get the local thread
-      // index
-      // // inside the loop. There can be no conflicts writing to the array.
-      // hpx::parallel::execution::static_chunk_size s(m_policy.chunk_size());
       // hpx::parallel::for_loop(
-      //     hpx::parallel::execution::par.with(s), m_policy.begin(),
-      //     m_policy.end(),
-      //     [this, &intermediate_results](typename Policy::member_type const i)
-      //     {
-      //       reference_type update = (reference_type)
-      //           intermediate_results[hpx::get_worker_thread_num()];
-      //       exec_functor<WorkTag>(m_functor, i, update);
+      //     hpx::parallel::execution::par.with(s), 0, num_worker_threads,
+      //     [this, &intermediate_results, value_size_bytes,
+      //      num_worker_threads](std::size_t const t) {
+      //       // This initializes the t:th reduction value to the appropriate
+      //       // init value based on the functor.
+      //       // std::cout << "ParallelReduce::execute init" << std::endl;
+      //       reference_type update = ValueInit::init(
+      //           ReducerConditional::select(m_functor, m_reducer),
+      //           (pointer_type)(&intermediate_results[t * value_size_bytes]));
+
+      //       // TODO: Use utilities that already exist.
+
+      //       // TODO: This is the static distribution. It should use a
+      //       // granularity of chunk_size to ensure that chunk_size iterations
+      //       // run on the same thread. Not clear how the dynamic one fits in
+      //       // here.
+      //       const typename Policy::member_type b = m_policy.begin();
+      //       const typename Policy::member_type e = m_policy.end();
+      //       const typename Policy::member_type n = e - b;
+      //       // std::cout << "b = " << b << ", e = " << e << ", n = " << n
+      //       //           << std::endl;
+      //       if (n == 0) {
+      //         return 0;
+      //       }
+      //       const typename Policy::member_type chunk_size =
+      //           (n - 1) / num_worker_threads + 1;
+
+      //       const typename Policy::member_type b_local = b + t * chunk_size;
+      //       Member e_local = b + (t + 1) * chunk_size;
+      //       if (e_local > e) {
+      //         e_local = e;
+      //       };
+
+      //       LOG("chunk range in thread " << hpx::get_worker_thread_num()
+      //                                    << " is " << b_local << " to "
+      //                                    << e_local);
+
+      //       // std::cout << "ParallelReduce::execute exec_functor, b_local =
+      //       "
+      //       //           << b_local << ", e_local = " << e_local <<
+      //       std::endl; for (typename Policy::member_type i = b_local; i <
+      //       e_local; ++i) {
+      //         exec_functor<WorkTag>(m_functor, i, update);
+      //       }
+
+      //       LOG("intermediate result from worker thread "
+      //           << hpx::get_worker_thread_num() << " is " << update);
       //     });
 
+      // NOTE: Alternative dynamic version, use chunk size to split up range
+      // into tasks. Write results into one slot for each worker thread.
+
+      // Initialize the values outside the for loop.
+      hpx::parallel::for_loop(
+          hpx::parallel::execution::par, 0, num_worker_threads,
+          [this, &intermediate_results, value_size_bytes](std::size_t t) {
+            ValueInit::init(
+                ReducerConditional::select(m_functor, m_reducer),
+                (pointer_type)(&intermediate_results[t * value_size_bytes]));
+          });
+
+      // Do the actual reduction on multiple threads. Get the local thread index
+      // inside the loop. There can be no conflicts writing to the array.
+      hpx::parallel::execution::static_chunk_size s(m_policy.chunk_size());
+      hpx::parallel::for_loop(
+          hpx::parallel::execution::par.with(s), m_policy.begin(),
+          m_policy.end(),
+          [this, &intermediate_results,
+           value_size_bytes](typename Policy::member_type const i) {
+            reference_type update = reference_type_cast<reference_type>{}(
+                &intermediate_results[HPX::impl_hardware_thread_id() *
+                                      value_size_bytes]);
+            exec_functor<WorkTag>(m_functor, i, update);
+          });
+
+      // TODO: Do tree reduction?
       LOG("reduced value from worker thread "
           << 0 << " is " << *(pointer_type)(&intermediate_results[0]));
       for (int i = 1; i < num_worker_threads; ++i) {
@@ -1075,75 +1119,79 @@ public:
       // NOTE: If I allocate this through HostSpace::allocate/deallocate,
       // instrumentation will be able to track this.
       // std::vector<value_type> intermediate_results(num_worker_threads);
-      auto intermediate_results = std::unique_ptr<unsigned char[]>(
-          new unsigned char[num_worker_threads * value_size_bytes]);
+      std::unique_ptr<char[]> intermediate_results(
+          new char[num_worker_threads * value_size_bytes]);
 
-      // This is the explicit, static version which spawns one task per worker
-      // thread.
-      hpx::parallel::execution::static_chunk_size s(1);
-      hpx::parallel::for_loop(
-          hpx::parallel::execution::par.with(s), 0, num_worker_threads,
-          [this, &intermediate_results, value_size_bytes,
-           num_worker_threads](std::size_t const t) {
-            // This initializes the t:th reduction value to the appropriate
-            // init value based on the functor.
-            reference_type update = ValueInit::init(
-                ReducerConditional::select(m_functor, m_reducer),
-                (pointer_type)(
-                    &(intermediate_results.get()[t * value_size_bytes])));
+      // NOTE: This is the explicit, static version which spawns one task per
+      // worker thread.
 
-            // TODO: Use utilities that already exist.
-            // TODO: This should be rounded to m_chunk_size granularity.
-            const typename Policy::member_type b = m_policy.begin();
-            const typename Policy::member_type e = m_policy.end();
-            const typename Policy::member_type n = e - b;
-            if (n == 0) {
-              return;
-            }
-            const typename Policy::member_type chunk_size =
-                (n - 1) / num_worker_threads + 1;
+      // hpx::parallel::execution::static_chunk_size s(1);
+      // hpx::parallel::for_loop(
+      //     hpx::parallel::execution::par.with(s), 0, num_worker_threads,
+      //     [this, &intermediate_results, value_size_bytes,
+      //      num_worker_threads](std::size_t const t) {
+      //       // This initializes the t:th reduction value to the appropriate
+      //       // init value based on the functor.
+      //       reference_type update = ValueInit::init(
+      //           ReducerConditional::select(m_functor, m_reducer),
+      //           (pointer_type)(&(intermediate_results[t *
+      //           value_size_bytes])));
 
-            const typename Policy::member_type b_local = b + t * chunk_size;
-            Member e_local = b + (t + 1) * chunk_size;
-            if (e_local > e) {
-              e_local = e;
-            };
+      //       // TODO: Use utilities that already exist.
+      //       // TODO: This should be rounded to m_chunk_size granularity.
+      //       const typename Policy::member_type b = m_policy.begin();
+      //       const typename Policy::member_type e = m_policy.end();
+      //       const typename Policy::member_type n = e - b;
+      //       if (n == 0) {
+      //         return;
+      //       }
+      //       const typename Policy::member_type chunk_size =
+      //           (n - 1) / num_worker_threads + 1;
 
-            LOG("chunk range in thread " << hpx::get_worker_thread_num()
-                                         << " is " << b_local << " to "
-                                         << e_local);
+      //       const typename Policy::member_type b_local = b + t * chunk_size;
+      //       Member e_local = b + (t + 1) * chunk_size;
+      //       if (e_local > e) {
+      //         e_local = e;
+      //       };
 
-            for (typename Policy::member_type i = b_local; i < e_local; ++i) {
-              exec_functor(m_mdr_policy, m_functor, i, update);
-            }
+      //       LOG("chunk range in thread " << hpx::get_worker_thread_num()
+      //                                    << " is " << b_local << " to "
+      //                                    << e_local);
 
-            LOG("intermediate result from worker thread "
-                << hpx::get_worker_thread_num() << " is " << update);
-          });
+      //       for (typename Policy::member_type i = b_local; i < e_local; ++i)
+      //       {
+      //         exec_functor(m_mdr_policy, m_functor, i, update);
+      //       }
 
-      // Alternative dynamic version, use chunk size to split up range into
-      // tasks. Write results into one slot for each worker thread.
+      //       LOG("intermediate result from worker thread "
+      //           << hpx::get_worker_thread_num() << " is " << update);
+      //     });
+
+      // NOTE: Alternative dynamic version, use chunk size to split up range
+      // into tasks. Write results into one slot for each worker thread.
 
       // Initialize the values outside the for loop.
-      // for (std::size_t t = 0; t < num_worker_threads; ++t) {
-      //   reference_type update =
-      //       ValueInit::init(ReducerConditional::select(m_functor, m_reducer),
-      //                       (pointer_type)(&intermediate_results[t]));
-      // }
+      hpx::parallel::for_loop(
+          hpx::parallel::execution::par, 0, num_worker_threads,
+          [this, &intermediate_results, value_size_bytes](std::size_t t) {
+            ValueInit::init(
+                ReducerConditional::select(m_functor, m_reducer),
+                (pointer_type)(&intermediate_results[t * value_size_bytes]));
+          });
 
-      // // Do the actual reduction on multiple threads. Get the local thread
-      // index
-      // // inside the loop. There can be no conflicts writing to the array.
-      // hpx::parallel::execution::static_chunk_size s(m_policy.chunk_size());
-      // hpx::parallel::for_loop(
-      //     hpx::parallel::execution::par.with(s), m_policy.begin(),
-      //     m_policy.end(),
-      //     [this, &intermediate_results](typename Policy::member_type const i)
-      //     {
-      //       reference_type update = (reference_type)
-      //           intermediate_results[hpx::get_worker_thread_num()];
-      //       exec_functor(m_mdr_policy, m_functor, i, update);
-      //     });
+      // Do the actual reduction on multiple threads. Get the local thread index
+      // inside the loop. There can be no conflicts writing to the array.
+      hpx::parallel::execution::static_chunk_size s(m_policy.chunk_size());
+      hpx::parallel::for_loop(
+          hpx::parallel::execution::par.with(s), m_policy.begin(),
+          m_policy.end(),
+          [this, &intermediate_results,
+           value_size_bytes](typename Policy::member_type const i) {
+            reference_type update = reference_type_cast<reference_type>{}(
+                &intermediate_results[HPX::impl_hardware_thread_id() *
+                                      value_size_bytes]);
+            exec_functor(m_mdr_policy, m_functor, i, update);
+          });
 
       LOG("reduced value from worker thread " << 0 << " is "
                                               << intermediate_results[0]);
@@ -1152,15 +1200,15 @@ public:
                                                 << intermediate_results[i]);
         ValueJoin::join(
             ReducerConditional::select(m_functor, m_reducer),
-            (pointer_type)(intermediate_results.get()),
-            (pointer_type)(intermediate_results.get()[i * value_size_bytes]));
+            (pointer_type)(&intermediate_results[0]),
+            (pointer_type)(&intermediate_results[i * value_size_bytes]));
       }
 
       LOG("reduced value before final is " << intermediate_results[0]);
 
       Kokkos::Impl::FunctorFinal<ReducerTypeFwd, WorkTagFwd>::final(
           ReducerConditional::select(m_functor, m_reducer),
-          (pointer_type)(intermediate_results.get()));
+          (pointer_type)(&intermediate_results[0]));
 
       LOG("final reduced value is " << intermediate_results[0]);
 
@@ -1253,88 +1301,135 @@ public:
 
       // This gets the size (in bytes) of the value we are reducing.
       const int value_count = Analysis::value_count(m_functor);
+      const size_t value_size_bytes = Analysis::value_size(m_functor);
 
-      std::vector<value_type> intermediate_results(num_worker_threads);
-      std::vector<value_type> intermediate_results2(
-          num_worker_threads); // TODO: Need this??
+      // std::vector<value_type> intermediate_results(num_worker_threads);
+      // std::vector<value_type> intermediate_results2(
+      //     num_worker_threads); // TODO: Need this??
+      std::unique_ptr<char[]> intermediate_results_1(
+          new char[num_worker_threads * value_size_bytes]);
+      std::unique_ptr<char[]> intermediate_results_2(
+          new char[num_worker_threads * value_size_bytes]);
 
-      hpx::parallel::execution::static_chunk_size s(1);
+      // NOTE: Explicit version which spawns one task per core.
+      // hpx::parallel::execution::static_chunk_size s(1);
 
+      // hpx::parallel::for_loop(
+      //     hpx::parallel::execution::par.with(s), 0, num_worker_threads,
+      //     [this, &intermediate_results_1, &intermediate_results_2,
+      //      num_worker_threads, value_count](std::size_t const t) {
+      //       // This initializes the t:th reduction value to the appropriate
+      //       // init value based on the functor.
+      //       reference_type update_sum = ValueInit::init(
+      //           m_functor, (pointer_type)(&intermediate_results[t]));
+
+      //       // TODO: Use utilities that already exist.
+      //       const typename Policy::member_type b = m_policy.begin();
+      //       const typename Policy::member_type e = m_policy.end();
+      //       LOG("(ParallelScan) range: " << b << " to " << e);
+
+      //       const typename Policy::member_type n = e - b;
+      //       if (n == 0) {
+      //         return;
+      //       }
+
+      //       const typename Policy::member_type chunk_size =
+      //           (n - 1) / num_worker_threads + 1;
+
+      //       const typename Policy::member_type b_local = b + t * chunk_size;
+      //       Member e_local = b + (t + 1) * chunk_size;
+      //       if (e_local > e) {
+      //         e_local = e;
+      //       };
+
+      //       LOG("(ParallelScan) chunk range in thread "
+      //           << hpx::get_worker_thread_num() << " is " << b_local << " to
+      //           "
+      //           << e_local);
+
+      //       for (typename Policy::member_type i = b_local; i < e_local; ++i)
+      //       {
+      //         exec_functor<WorkTag>(m_functor, i, update_sum, false);
+      //       }
+      //     });
+
+      // NOTE: Alternative dynamic version, use chunk size to split up range
+      // into tasks. Write results into one slot for each worker thread.
+
+      // Initialize the values outside the for loop.
       hpx::parallel::for_loop(
-          hpx::parallel::execution::par.with(s), 0, num_worker_threads,
-          [this, &intermediate_results, &intermediate_results2,
-           num_worker_threads, value_count](std::size_t const t) {
-            // This initializes the t:th reduction value to the appropriate
-            // init value based on the functor.
-            reference_type update_sum = ValueInit::init(
-                m_functor, (pointer_type)(&intermediate_results[t]));
-
-            // TODO: Use utilities that already exist.
-            const typename Policy::member_type b = m_policy.begin();
-            const typename Policy::member_type e = m_policy.end();
-            LOG("(ParallelScan) range: " << b << " to " << e);
-
-            const typename Policy::member_type n = e - b;
-            if (n == 0) {
-              return;
-            }
-
-            const typename Policy::member_type chunk_size =
-                (n - 1) / num_worker_threads + 1;
-
-            const typename Policy::member_type b_local = b + t * chunk_size;
-            Member e_local = b + (t + 1) * chunk_size;
-            if (e_local > e) {
-              e_local = e;
-            };
-
-            LOG("(ParallelScan) chunk range in thread "
-                << hpx::get_worker_thread_num() << " is " << b_local << " to "
-                << e_local);
-
-            for (typename Policy::member_type i = b_local; i < e_local; ++i) {
-              exec_functor<WorkTag>(m_functor, i, update_sum, false);
-            }
+          hpx::parallel::execution::par, 0, num_worker_threads,
+          [this, &intermediate_results_1, value_size_bytes](std::size_t t) {
+            ValueInit::init(
+                m_functor,
+                (pointer_type)(&intermediate_results_1[t * value_size_bytes]));
           });
 
-      ValueInit::init(m_functor, (pointer_type)(&intermediate_results2[0]));
+      // Do the actual reduction on multiple threads. Get the local thread index
+      // inside the loop. There can be no conflicts writing to the array.
+      hpx::parallel::execution::static_chunk_size s(m_policy.chunk_size());
+      hpx::parallel::for_loop(
+          hpx::parallel::execution::par.with(s), m_policy.begin(),
+          m_policy.end(),
+          [this, &intermediate_results_1,
+           value_size_bytes](typename Policy::member_type const i) {
+            reference_type update = reference_type_cast<reference_type>{}(
+                &intermediate_results_1[HPX::impl_hardware_thread_id() *
+                                        value_size_bytes]);
+            exec_functor<WorkTag>(m_functor, i, update, false);
+          });
+
+      ValueInit::init(m_functor, (pointer_type)(&intermediate_results_2[0]));
 
       for (int i = 1; i < num_worker_threads; ++i) {
-        pointer_type ptr_prev = (pointer_type)(&intermediate_results[i - 1]);
-        pointer_type ptr2_prev = (pointer_type)(&intermediate_results2[i - 1]);
+        pointer_type ptr_1_prev =
+            (pointer_type)(&intermediate_results_1[i - 1]);
+        pointer_type ptr_2_prev =
+            (pointer_type)(&intermediate_results_2[i - 1]);
 
-        pointer_type ptr = (pointer_type)(&intermediate_results[i]);
-        pointer_type ptr2 = (pointer_type)(&intermediate_results2[i]);
+        // pointer_type ptr_1 = (pointer_type)(&intermediate_results_1[i]);
+        pointer_type ptr_2 = (pointer_type)(&intermediate_results_2[i]);
 
         for (int j = 0; j < value_count; ++j) {
-          ptr2[j] = ptr2_prev[j];
+          ptr_2[j] = ptr_2_prev[j];
         }
 
-        ValueJoin::join(m_functor, ptr2, ptr_prev);
+        ValueJoin::join(m_functor, ptr_2, ptr_1_prev);
       }
 
+      // hpx::parallel::for_loop(
+      //     hpx::parallel::execution::par.with(s), 0, num_worker_threads,
+      //     [this, &intermediate_results, &intermediate_results2,
+      //      num_worker_threads, value_count](std::size_t const t) {
+      //       reference_type update_base =
+      //           ValueOps::reference((pointer_type)(&intermediate_results2[t]));
+
+      //       // TODO: Use utilities that already exist.
+      //       const typename Policy::member_type b = m_policy.begin();
+      //       const typename Policy::member_type e = m_policy.end();
+      //       const typename Policy::member_type n = e - b;
+      //       const typename Policy::member_type chunk_size =
+      //           (n - 1) / num_worker_threads + 1;
+      //       const typename Policy::member_type b_local = b + t * chunk_size;
+      //       Member e_local = b + (t + 1) * chunk_size;
+      //       if (e_local > e) {
+      //         e_local = e;
+      //       };
+
+      //       for (typename Policy::member_type i = b_local; i < e_local; ++i)
+      //       {
+      //         exec_functor<WorkTag>(m_functor, i, update_base, true);
+      //       }
+      //     });
       hpx::parallel::for_loop(
-          hpx::parallel::execution::par.with(s), 0, num_worker_threads,
-          [this, &intermediate_results, &intermediate_results2,
-           num_worker_threads, value_count](std::size_t const t) {
-            reference_type update_base =
-                ValueOps::reference((pointer_type)(&intermediate_results2[t]));
-
-            // TODO: Use utilities that already exist.
-            const typename Policy::member_type b = m_policy.begin();
-            const typename Policy::member_type e = m_policy.end();
-            const typename Policy::member_type n = e - b;
-            const typename Policy::member_type chunk_size =
-                (n - 1) / num_worker_threads + 1;
-            const typename Policy::member_type b_local = b + t * chunk_size;
-            Member e_local = b + (t + 1) * chunk_size;
-            if (e_local > e) {
-              e_local = e;
-            };
-
-            for (typename Policy::member_type i = b_local; i < e_local; ++i) {
-              exec_functor<WorkTag>(m_functor, i, update_base, true);
-            }
+          hpx::parallel::execution::par.with(s), m_policy.begin(),
+          m_policy.end(),
+          [this, &intermediate_results_2,
+           value_size_bytes](typename Policy::member_type const i) {
+            reference_type update_base = reference_type_cast<reference_type>{}(
+                &intermediate_results_2[HPX::impl_hardware_thread_id() *
+                                        value_size_bytes]);
+            exec_functor<WorkTag>(m_functor, i, update_base, true);
           });
 
       LOG("reduced value from worker thread " << 0 << " is "
@@ -1395,91 +1490,148 @@ public:
   inline void execute() const {
     hpx::run_hpx_function([this]() {
       // TODO: hpx::get_num_worker_threads() is wrong. Should be pool threads.
+      // TODO: Should be bigger than pool threads (for uneven chunk sizes).
       auto const num_worker_threads = hpx::get_num_worker_threads();
+
+      // This gets the size (in bytes) of the value we are reducing.
       const int value_count = Analysis::value_count(m_functor);
+      const size_t value_size_bytes = Analysis::value_size(m_functor);
 
-      std::vector<value_type> intermediate_results(num_worker_threads);
-      std::vector<value_type> intermediate_results2(num_worker_threads); // ??
+      // std::vector<value_type> intermediate_results(num_worker_threads);
+      // std::vector<value_type> intermediate_results2(
+      //     num_worker_threads); // TODO: Need this??
+      std::unique_ptr<char[]> intermediate_results_1(
+          new char[num_worker_threads * value_size_bytes]);
+      std::unique_ptr<char[]> intermediate_results_2(
+          new char[num_worker_threads * value_size_bytes]);
 
-      hpx::parallel::execution::static_chunk_size s(1);
+      // NOTE: Explicit version which spawns one task per core.
+      // hpx::parallel::execution::static_chunk_size s(1);
 
+      // hpx::parallel::for_loop(
+      //     hpx::parallel::execution::par.with(s), 0, num_worker_threads,
+      //     [this, &intermediate_results_1, &intermediate_results_2,
+      //      num_worker_threads, value_count](std::size_t const t) {
+      //       // This initializes the t:th reduction value to the appropriate
+      //       // init value based on the functor.
+      //       reference_type update_sum = ValueInit::init(
+      //           m_functor, (pointer_type)(&intermediate_results[t]));
+
+      //       // TODO: Use utilities that already exist.
+      //       const typename Policy::member_type b = m_policy.begin();
+      //       const typename Policy::member_type e = m_policy.end();
+      //       LOG("(ParallelScan) range: " << b << " to " << e);
+
+      //       const typename Policy::member_type n = e - b;
+      //       if (n == 0) {
+      //         return;
+      //       }
+
+      //       const typename Policy::member_type chunk_size =
+      //           (n - 1) / num_worker_threads + 1;
+
+      //       const typename Policy::member_type b_local = b + t * chunk_size;
+      //       Member e_local = b + (t + 1) * chunk_size;
+      //       if (e_local > e) {
+      //         e_local = e;
+      //       };
+
+      //       LOG("(ParallelScan) chunk range in thread "
+      //           << hpx::get_worker_thread_num() << " is " << b_local << " to
+      //           "
+      //           << e_local);
+
+      //       for (typename Policy::member_type i = b_local; i < e_local; ++i)
+      //       {
+      //         exec_functor<WorkTag>(m_functor, i, update_sum, false);
+      //       }
+      //     });
+
+      // NOTE: Alternative dynamic version, use chunk size to split up range
+      // into tasks. Write results into one slot for each worker thread.
+
+      // Initialize the values outside the for loop.
       hpx::parallel::for_loop(
-          hpx::parallel::execution::par.with(s), 0, num_worker_threads,
-          [this, &intermediate_results, &intermediate_results2,
-           num_worker_threads, value_count](std::size_t const t) {
-            // This initializes the t:th reduction value to the appropriate
-            // init value based on the functor.
-            reference_type update_sum = ValueInit::init(
-                m_functor, (pointer_type)(&intermediate_results[t]));
-
-            // TODO: Use utilities that already exist.
-            const typename Policy::member_type b = m_policy.begin();
-            const typename Policy::member_type e = m_policy.end();
-            const typename Policy::member_type n = e - b;
-            if (n == 0) {
-              return;
-            }
-            const typename Policy::member_type chunk_size =
-                (n - 1) / num_worker_threads + 1;
-
-            const typename Policy::member_type b_local = b + t * chunk_size;
-            Member e_local = b + (t + 1) * chunk_size;
-            if (e_local > e) {
-              e_local = e;
-            };
-
-            LOG("(ParallelScanWithTotal) chunk range in thread "
-                << hpx::get_worker_thread_num() << " is " << b_local << " to "
-                << e_local);
-
-            for (typename Policy::member_type i = b_local; i < e_local; ++i) {
-              exec_functor<WorkTag>(m_functor, i, update_sum, false);
-            }
+          hpx::parallel::execution::par, 0, num_worker_threads,
+          [this, &intermediate_results_1, value_size_bytes](std::size_t t) {
+            ValueInit::init(
+                m_functor,
+                (pointer_type)(&intermediate_results_1[t * value_size_bytes]));
           });
 
-      ValueInit::init(m_functor, (pointer_type)(&intermediate_results2[0]));
+      // Do the actual reduction on multiple threads. Get the local thread index
+      // inside the loop. There can be no conflicts writing to the array.
+      hpx::parallel::execution::static_chunk_size s(m_policy.chunk_size());
+      hpx::parallel::for_loop(
+          hpx::parallel::execution::par.with(s), m_policy.begin(),
+          m_policy.end(),
+          [this, &intermediate_results_1,
+           value_size_bytes](typename Policy::member_type const i) {
+            reference_type update = reference_type_cast<reference_type>{}(
+                &intermediate_results_1[HPX::impl_hardware_thread_id() *
+                                        value_size_bytes]);
+            exec_functor<WorkTag>(m_functor, i, update, false);
+          });
+
+      ValueInit::init(m_functor, (pointer_type)(&intermediate_results_2[0]));
 
       for (int i = 1; i < num_worker_threads; ++i) {
-        pointer_type ptr_prev = (pointer_type)(&intermediate_results[i - 1]);
-        pointer_type ptr2_prev = (pointer_type)(&intermediate_results2[i - 1]);
+        pointer_type ptr_1_prev =
+            (pointer_type)(&intermediate_results_1[i - 1]);
+        pointer_type ptr_2_prev =
+            (pointer_type)(&intermediate_results_2[i - 1]);
 
-        pointer_type ptr = (pointer_type)(&intermediate_results[i]);
-        pointer_type ptr2 = (pointer_type)(&intermediate_results2[i]);
+        // pointer_type ptr_1 = (pointer_type)(&intermediate_results_1[i]);
+        pointer_type ptr_2 = (pointer_type)(&intermediate_results_2[i]);
 
         for (int j = 0; j < value_count; ++j) {
-          ptr2[j] = ptr2_prev[j];
+          ptr_2[j] = ptr_2_prev[j];
         }
 
-        ValueJoin::join(m_functor, ptr2, ptr_prev);
+        ValueJoin::join(m_functor, ptr_2, ptr_1_prev);
       }
 
+      // hpx::parallel::for_loop(
+      //     hpx::parallel::execution::par.with(s), 0, num_worker_threads,
+      //     [this, &intermediate_results, &intermediate_results2,
+      //      num_worker_threads, value_count](std::size_t const t) {
+      //       reference_type update_base =
+      //           ValueOps::reference((pointer_type)(&intermediate_results2[t]));
+
+      //       // TODO: Use utilities that already exist.
+      //       const typename Policy::member_type b = m_policy.begin();
+      //       const typename Policy::member_type e = m_policy.end();
+      //       const typename Policy::member_type n = e - b;
+      //       const typename Policy::member_type chunk_size =
+      //           (n - 1) / num_worker_threads + 1;
+      //       const typename Policy::member_type b_local = b + t * chunk_size;
+      //       Member e_local = b + (t + 1) * chunk_size;
+      //       if (e_local > e) {
+      //         e_local = e;
+      //       };
+
+      //       for (typename Policy::member_type i = b_local; i < e_local; ++i)
+      //       {
+      //         exec_functor<WorkTag>(m_functor, i, update_base, true);
+      //       }
+      //     });
       hpx::parallel::for_loop(
-          hpx::parallel::execution::par.with(s), 0, num_worker_threads,
-          [this, &intermediate_results, &intermediate_results2,
-           num_worker_threads, value_count](std::size_t const t) {
-            reference_type update_base =
-                ValueOps::reference((pointer_type)(&intermediate_results2[t]));
-
-            // TODO: Use utilities that already exist.
-            const typename Policy::member_type b = m_policy.begin();
-            const typename Policy::member_type e = m_policy.end();
-            const typename Policy::member_type n = e - b;
-            const typename Policy::member_type chunk_size =
-                (n - 1) / num_worker_threads + 1;
-            const typename Policy::member_type b_local = b + t * chunk_size;
-            Member e_local = b + (t + 1) * chunk_size;
-            if (e_local > e) {
-              e_local = e;
-            };
-
-            for (typename Policy::member_type i = b_local; i < e_local; ++i) {
-              exec_functor<WorkTag>(m_functor, i, update_base, true);
-            }
-
-            if (t == num_worker_threads - 1) {
-              m_returnvalue = update_base;
-            }
+          hpx::parallel::execution::par.with(s), m_policy.begin(),
+          m_policy.end(),
+          [this, &intermediate_results_2,
+           value_size_bytes](typename Policy::member_type const i) {
+            reference_type update_base = reference_type_cast<reference_type>{}(
+                &intermediate_results_2[HPX::impl_hardware_thread_id() *
+                                        value_size_bytes]);
+            exec_functor<WorkTag>(m_functor, i, update_base, true);
           });
+
+      {
+        reference_type update_base = reference_type_cast<reference_type>{}(
+            &intermediate_results_2[(num_worker_threads - 1) *
+                                    value_size_bytes]);
+        m_returnvalue = update_base;
+      }
 
       LOG("reduced value from worker thread " << 0 << " is "
                                               << intermediate_results[0]);
@@ -1542,7 +1694,7 @@ public:
       auto const league_size = m_policy.league_size();
 
       auto hpx_policy = hpx::parallel::execution::par.with(
-          hpx::parallel::execution::static_chunk_size(1));
+          hpx::parallel::execution::static_chunk_size(m_policy.chunk_size()));
 
       // TODO: Allocate scratch space: shared, team and thread. Should allocate
       // separate team scratch memories for each thread team so that multiple
@@ -1579,8 +1731,8 @@ public:
           hpx_policy, 0, league_size,
           [this, league_size, team_size,
            hpx_policy](std::size_t const league_rank) {
-            std::shared_ptr<hpx::lcos::local::barrier> team_barrier(
-                new hpx::lcos::local::barrier(team_size));
+            // std::shared_ptr<hpx::lcos::local::barrier> team_barrier(
+            //     new hpx::lcos::local::barrier(team_size));
             // TODO: These memory chunks could all be allocated together.
 
             // This memory is shared across all threads in a team. This one is
@@ -1589,10 +1741,12 @@ public:
             // have to at least point to different memory.
             // m_policy.scratch_size(level) returns team_shared_bytes +
             // team_size * thread_local_bytes.
-            const int scratch_size = m_shared;
+
+            // const int scratch_size = m_shared;
+            std::unique_ptr<char[]> scratch_buffer(new char[m_shared]);
             // m_policy.scratch_size(0) + m_policy.scratch_size(1);
-            std::vector<char> scratch(scratch_size);
-            char *scratch_data = scratch.data();
+            // std::vector<char> scratch(scratch_size);
+            // char *scratch_data = scratch.data();
 
             // printf("ParallelFor<TeamPolicy>: league_rank = %zu, scratch_data
             // = "
@@ -1603,14 +1757,17 @@ public:
             // So we need to allocate temporary memory for a reduction. This
             // memory is shared across all threads in a team. We have a fixed
             // upper limit on the space allocated for a reduction.
-            const std::size_t max_thread_reduce_bytes = 512; // TODO: Is this
-                                                             // enough? Dynamic?
-                                                             // Move to class
-                                                             // scope.
-            const int reduce_size =
-                max_thread_reduce_bytes * m_policy.team_size();
-            std::vector<char> reduce_buffer(reduce_size);
-            char *reduce_buffer_data = reduce_buffer.data();
+
+            // NOTE: No team reduction buffer needed with team size = 1.
+            // const std::size_t max_thread_reduce_bytes = 512; // TODO: Is this
+            //                                                  // enough?
+            //                                                  Dynamic?
+            //                                                  // Move to class
+            //                                                  // scope.
+            // const int reduce_size =
+            //     max_thread_reduce_bytes * m_policy.team_size();
+            // std::vector<char> reduce_buffer(reduce_size);
+            // char *reduce_buffer_data = reduce_buffer.data();
 
             // NOTE: Assume that team_size = 1.
             // assert(team_size == 1);
@@ -1619,10 +1776,12 @@ public:
             //     [this, league_rank, league_size, team_size, scratch_data,
             //      scratch_size, reduce_buffer_data, reduce_size,
             //      team_barrier](std::size_t const team_rank) {
-            exec_functor<WorkTag>(
-                m_functor, Member(m_policy, 0, league_rank, scratch_data,
-                                  scratch_size, reduce_buffer_data, reduce_size
-                                  /*, team_barrier*/));
+            exec_functor<WorkTag>(m_functor,
+                                  Member(m_policy, 0, league_rank,
+                                         scratch_buffer.get(), m_shared,
+                                         /*reduce_buffer_data*/ nullptr,
+                                         /*reduce_size*/ 0
+                                         /*, team_barrier*/));
             // });
           });
     });
@@ -1692,62 +1851,99 @@ public:
       auto const team_size = m_policy.team_size();
       auto const league_size = m_policy.league_size();
 
-      const size_t value_size = Analysis::value_size(
+      const size_t value_size_bytes = Analysis::value_size(
           ReducerConditional::select(m_functor, m_reducer));
 
       auto const hpx_policy = hpx::parallel::execution::par.with(
-          hpx::parallel::execution::static_chunk_size(1));
+          hpx::parallel::execution::static_chunk_size(m_policy.chunk_size()));
 
       auto const num_worker_threads = hpx::get_num_worker_threads();
 
-      std::vector<value_type> intermediate_results(num_worker_threads);
+      // NOTE: value_type is not always the right size.
+      std::unique_ptr<char[]> intermediate_results(
+          new char[num_worker_threads * value_size_bytes]);
 
+      // NOTE: Explicit version which spawns one task per core.
+      // hpx::parallel::for_loop(
+      //     hpx_policy, 0, num_worker_threads,
+      //     [this, league_size, team_size, hpx_policy, &intermediate_results,
+      //      num_worker_threads](std::size_t const t) {
+      //       reference_type update = ValueInit::init(
+      //           ReducerConditional::select(m_functor, m_reducer),
+      //           (pointer_type)(&intermediate_results[t]));
+
+      //       const int scratch_size = m_shared;
+      //       // m_policy.scratch_size(0) + m_policy.scratch_size(1);
+      //       std::vector<char> scratch(scratch_size);
+      //       char *scratch_data = scratch.data();
+
+      //       const std::size_t max_thread_reduce_bytes = 512;
+      //       const int reduce_size =
+      //           max_thread_reduce_bytes * m_policy.team_size();
+      //       std::vector<char> reduce_buffer(reduce_size);
+      //       char *reduce_buffer_data = reduce_buffer.data();
+
+      //       if (league_size == 0) {
+      //         return 0;
+      //       }
+      //       const int chunk_size = (league_size - 1) / num_worker_threads + 1;
+
+      //       const int b_local = t * chunk_size;
+      //       int e_local = (t + 1) * chunk_size;
+      //       if (e_local > league_size) {
+      //         e_local = league_size;
+      //       };
+
+      //       // NOTE: Assume that team_size = 1.
+      //       // ASSERT_EQ(team_size, 1);
+      //       for (int league_rank = b_local; league_rank < e_local;
+      //            ++league_rank) {
+      //         exec_functor<WorkTag>(m_functor,
+      //                               Member(m_policy, 0, league_rank,
+      //                                      scratch_data, scratch_size,
+      //                                      reduce_buffer_data, reduce_size),
+      //                               update);
+      //       }
+      //     });
+
+      // NOTE: Simple version with correct chunk size etc.
+
+      // Initialize the values outside the for loop.
       hpx::parallel::for_loop(
-          hpx_policy, 0, num_worker_threads,
-          [this, league_size, team_size, hpx_policy, &intermediate_results,
-           num_worker_threads](std::size_t const t) {
-            reference_type update = ValueInit::init(
+          hpx::parallel::execution::par, 0, num_worker_threads,
+          [this, &intermediate_results, value_size_bytes](std::size_t t) {
+            ValueInit::init(
                 ReducerConditional::select(m_functor, m_reducer),
-                (pointer_type)(&intermediate_results[t]));
+                (pointer_type)(&intermediate_results[t * value_size_bytes]));
+          });
 
-            const int scratch_size = m_shared;
-            // m_policy.scratch_size(0) + m_policy.scratch_size(1);
-            std::vector<char> scratch(scratch_size);
-            char *scratch_data = scratch.data();
+      // Do the actual reduction on multiple threads. Get the local thread index
+      // inside the loop. There can be no conflicts writing to the array.
+      hpx::parallel::for_loop(
+          hpx_policy, 0, league_size,
+          [this, league_size, team_size, &intermediate_results,
+           value_size_bytes](std::size_t const league_rank) {
+            reference_type update = reference_type_cast<reference_type>{}(
+                &intermediate_results[HPX::impl_hardware_thread_id() *
+                                      value_size_bytes]);
 
-            const std::size_t max_thread_reduce_bytes = 512;
-            const int reduce_size =
-                max_thread_reduce_bytes * m_policy.team_size();
-            std::vector<char> reduce_buffer(reduce_size);
-            char *reduce_buffer_data = reduce_buffer.data();
+            std::unique_ptr<char[]> scratch_buffer(new char[m_shared]);
 
-            if (league_size == 0) {
-              return 0;
-            }
-            const int chunk_size = (league_size - 1) / num_worker_threads + 1;
-
-            const int b_local = t * chunk_size;
-            int e_local = (t + 1) * chunk_size;
-            if (e_local > league_size) {
-              e_local = league_size;
-            };
-
-            // NOTE: Assume that team_size = 1.
-            // ASSERT_EQ(team_size, 1);
-            for (int league_rank = b_local; league_rank < e_local;
-                 ++league_rank) {
-              exec_functor<WorkTag>(m_functor,
-                                    Member(m_policy, 0, league_rank,
-                                           scratch_data, scratch_size,
-                                           reduce_buffer_data, reduce_size),
-                                    update);
-            }
+            exec_functor<WorkTag>(m_functor,
+                                  Member(m_policy, 0, league_rank,
+                                         scratch_buffer.get(), m_shared,
+                                         /*reduce_buffer_data*/ nullptr,
+                                         /*reduce_size*/ 0
+                                         /*, team_barrier*/),
+                                  update);
+            // });
           });
 
       const pointer_type ptr = pointer_type(&intermediate_results[0]);
-      for (int i = 1; i < num_worker_threads; ++i) {
-        ValueJoin::join(ReducerConditional::select(m_functor, m_reducer), ptr,
-                        (pointer_type)(&intermediate_results[i]));
+      for (int t = 1; t < num_worker_threads; ++t) {
+        ValueJoin::join(
+            ReducerConditional::select(m_functor, m_reducer), ptr,
+            (pointer_type)(&intermediate_results[t * value_size_bytes]));
       }
 
       Kokkos::Impl::FunctorFinal<ReducerTypeFwd, WorkTagFwd>::final(
