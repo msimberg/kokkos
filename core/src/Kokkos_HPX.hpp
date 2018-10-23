@@ -68,6 +68,7 @@
 #include <impl/Kokkos_Profiling_Interface.hpp>
 #include <impl/Kokkos_Tags.hpp>
 #include <impl/Kokkos_TaskQueue.hpp>
+#include <impl/Kokkos_TaskQueue_impl.hpp>
 
 #include <KokkosExp_MDRangePolicy.hpp>
 
@@ -1740,6 +1741,8 @@ public:
     return TaskType::apply;
   }
 };
+
+template class TaskQueue<Kokkos::HPX>;
 
 } // namespace Impl
 } // namespace Kokkos
