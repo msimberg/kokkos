@@ -85,10 +85,14 @@ public:
 
   typedef PolicyTraits<Properties ... > traits;
 
+  //! Execution space of this execution policy
+  typedef Kokkos::Cuda  execution_space ;
+
 private:
 
   enum { MAX_WARP = 8 };
 
+  execution_space m_space ;
   int m_league_size ;
   int m_team_size ;
   int m_vector_length ;
@@ -97,9 +101,6 @@ private:
   int m_chunk_size;
 
 public:
-
-  //! Execution space of this execution policy
-  typedef Kokkos::Cuda  execution_space ;
 
   TeamPolicyInternal& operator = (const TeamPolicyInternal& p) {
     m_league_size = p.m_league_size;
@@ -210,6 +211,7 @@ public:
 
   //----------------------------------------
 
+  inline const execution_space & space() const { return m_space ; }
   inline int vector_length()   const { return m_vector_length ; }
   inline int team_size()   const { return m_team_size ; }
   inline int league_size() const { return m_league_size ; }
@@ -225,7 +227,8 @@ public:
   }
 
   TeamPolicyInternal()
-    : m_league_size( 0 )
+    : m_space()
+    , m_league_size( 0 )
     , m_team_size( 0 )
     , m_vector_length( 0 )
     , m_team_scratch_size {0,0}
@@ -234,11 +237,12 @@ public:
    {}
 
   /** \brief  Specify league size, request team size */
-  TeamPolicyInternal( execution_space &
+  TeamPolicyInternal( execution_space & space_
             , int league_size_
             , int team_size_request
             , int vector_length_request = 1 )
-    : m_league_size( league_size_ )
+    : m_space( space_ )
+    , m_league_size( league_size_ )
     , m_team_size( team_size_request )
     , m_vector_length( vector_length_request )
     , m_team_scratch_size {0,0}
@@ -261,11 +265,12 @@ public:
     }
 
   /** \brief  Specify league size, request team size */
-  TeamPolicyInternal( execution_space &
+  TeamPolicyInternal( execution_space & space_
             , int league_size_
             , const Kokkos::AUTO_t & /* team_size_request */
             , int vector_length_request = 1 )
-    : m_league_size( league_size_ )
+    : m_space( space_ )
+    , m_league_size( league_size_ )
     , m_team_size( -1 )
     , m_vector_length( vector_length_request )
     , m_team_scratch_size {0,0}
@@ -285,7 +290,8 @@ public:
   TeamPolicyInternal( int league_size_
             , int team_size_request
             , int vector_length_request = 1 )
-    : m_league_size( league_size_ )
+    : m_space()
+    , m_league_size( league_size_ )
     , m_team_size( team_size_request )
     , m_vector_length ( vector_length_request )
     , m_team_scratch_size {0,0}
@@ -310,7 +316,8 @@ public:
   TeamPolicyInternal( int league_size_
             , const Kokkos::AUTO_t & /* team_size_request */
             , int vector_length_request = 1 )
-    : m_league_size( league_size_ )
+    : m_space()
+    , m_league_size( league_size_ )
     , m_team_size( -1 )
     , m_vector_length ( vector_length_request )
     , m_team_scratch_size {0,0}
