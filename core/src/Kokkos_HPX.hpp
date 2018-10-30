@@ -87,26 +87,13 @@
 #include <stdexcept>
 #include <vector>
 
-namespace hpx {
-template <typename F> inline void run_hpx_function(F &&f) {
-  if (hpx::threads::get_self_ptr()) {
-    f();
-  } else {
-    hpx::threads::run_as_hpx_thread(std::move(f));
-  }
-}
-} // namespace hpx
-
 namespace Kokkos {
 
-static bool kokkos_hpx_initialized = false;
+namespace Impl {
+extern bool kokkos_hpx_initialized;
+extern hpx::shared_future<void> kokkos_hpx_outstanding_work;
+} // namespace Impl
 
-// This represents the HPX runtime instance. It can be stateful and keep track
-// of an instance of its own, but in this case it should probably just be a way
-// to access properties of the HPX runtime through a common API (as defined by
-// Kokkos). Can in principle create as many of these as we want and all can
-// access the same HPX runtime (there can only be one in any case). Most methods
-// are static.
 class HPX {
 public:
   using execution_space = HPX;
@@ -123,14 +110,16 @@ public:
 
   inline static bool in_parallel(HPX const & = HPX()) noexcept { return false; }
   inline static void fence(HPX const & = HPX()) noexcept {
-    // TODO: This could keep a list of futures of ongoing tasks and wait for
-    // all to be ready.
-
-    // Can be no-op currently as long as all parallel calls are blocking.
+    if (hpx::threads::get_self_ptr()) {
+      Impl::kokkos_hpx_outstanding_work.wait();
+    } else {
+      hpx::threads::run_as_hpx_thread(
+          []() { Impl::kokkos_hpx_outstanding_work.wait(); });
+    }
   }
 
   inline static bool is_asynchronous(HPX const & = HPX()) noexcept {
-    return false;
+    return true;
   }
 
   static std::vector<HPX> partition(...) {
@@ -182,8 +171,10 @@ public:
       hpx::util::yield_while([rt]()
         { return rt->get_state() < hpx::state_running; });
 
-      kokkos_hpx_initialized = true;
+      Impl::kokkos_hpx_initialized = true;
     }
+
+    Impl::kokkos_hpx_outstanding_work = hpx::make_ready_future<void>();
   }
 
   static void impl_initialize() {
@@ -208,8 +199,10 @@ public:
       hpx::util::yield_while([rt]()
         { return rt->get_state() < hpx::state_running; });
 
-      kokkos_hpx_initialized = true;
+      Impl::kokkos_hpx_initialized = true;
     }
+
+    Impl::kokkos_hpx_outstanding_work = hpx::make_ready_future<void>();
   }
 
   static bool impl_is_initialized() noexcept {
@@ -218,7 +211,9 @@ public:
   }
 
   static void impl_finalize() {
-    if (kokkos_hpx_initialized) {
+    fence();
+
+    if (Impl::kokkos_hpx_initialized) {
       hpx::runtime *rt = hpx::get_runtime_ptr();
       if (rt == nullptr) {
       } else {
@@ -273,9 +268,15 @@ public:
 
   static constexpr const char *name() noexcept { return "HPX"; }
 };
+
+namespace Impl {
+template <typename F> inline void run_hpx_function(F &&f) {
+  kokkos_hpx_outstanding_work = kokkos_hpx_outstanding_work.then(
+      [HPX_CAPTURE_FORWARD(f)](hpx::shared_future<void>) { f(); });
+}
+} // namespace Impl
 } // namespace Kokkos
 
-// These apparently need revising on the Kokkos side. Keep same as OpenMP.
 namespace Kokkos {
 namespace Impl {
 template <>
@@ -603,7 +604,7 @@ private:
 
 public:
   inline void execute() const {
-    hpx::run_hpx_function([this]() {
+    Kokkos::Impl::run_hpx_function([*this]() {
       hpx::parallel::for_loop(hpx::parallel::execution::par.with(
                                   hpx::parallel::execution::static_chunk_size(
                                       m_policy.chunk_size())),
@@ -635,7 +636,7 @@ private:
 
 public:
   inline void execute() const {
-    hpx::run_hpx_function([this]() {
+    Kokkos::Impl::run_hpx_function([*this]() {
       hpx::parallel::for_loop(hpx::parallel::execution::par.with(
                                   hpx::parallel::execution::static_chunk_size(
                                       m_policy.chunk_size())),
@@ -718,7 +719,7 @@ private:
 public:
   inline void execute() const {
 
-    hpx::run_hpx_function([this]() {
+    Kokkos::Impl::run_hpx_function([*this]() {
       auto const num_worker_threads = HPX::concurrency();
 
       const size_t value_size_bytes = Analysis::value_size(
@@ -839,7 +840,7 @@ private:
 
 public:
   inline void execute() const {
-    hpx::run_hpx_function([this]() {
+    Kokkos::Impl::run_hpx_function([*this]() {
       auto const num_worker_threads = HPX::concurrency();
       const size_t value_size_bytes = Analysis::value_size(
           ReducerConditional::select(m_functor, m_reducer));
@@ -963,7 +964,7 @@ private:
 
 public:
   inline void execute() const {
-    hpx::run_hpx_function([this]() {
+    Kokkos::Impl::run_hpx_function([*this]() {
       auto const num_worker_threads = HPX::concurrency();
       const int value_count = Analysis::value_count(m_functor);
       const size_t value_size_bytes = Analysis::value_size(m_functor);
@@ -1116,7 +1117,7 @@ private:
 
 public:
   inline void execute() const {
-    hpx::run_hpx_function([this]() {
+    Kokkos::Impl::run_hpx_function([*this]() {
       auto const num_worker_threads = HPX::concurrency();
       const int value_count = Analysis::value_count(m_functor);
       const size_t value_size_bytes = Analysis::value_size(m_functor);
@@ -1268,7 +1269,7 @@ private:
 
 public:
   inline void execute() const {
-    hpx::run_hpx_function([this]() {
+    Kokkos::Impl::run_hpx_function([*this]() {
       auto const team_size = m_policy.team_size();
       auto const league_size = m_policy.league_size();
       auto const num_worker_threads = HPX::concurrency();
@@ -1359,7 +1360,7 @@ private:
 
 public:
   inline void execute() const {
-    hpx::run_hpx_function([this]() {
+    Kokkos::Impl::run_hpx_function([*this]() {
       auto const team_size = m_policy.team_size();
       auto const league_size = m_policy.league_size();
       const size_t value_size_bytes = Analysis::value_size(
