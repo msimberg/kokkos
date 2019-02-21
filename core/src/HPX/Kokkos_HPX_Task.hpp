@@ -52,7 +52,6 @@
 #include <Kokkos_HPX.hpp>
 
 #include <hpx/apply.hpp>
-#include <hpx/lcos/local/counting_semaphore.hpp>
 
 #include <type_traits>
 
@@ -85,7 +84,7 @@ public:
   // Must provide task queue execution function
   void execute_task() const {
     using hpx::apply;
-    using hpx::lcos::local::counting_semaphore;
+    using hpx::parallel::execution::chunked_round_robin_executor;
     using task_base_type = typename scheduler_type::task_base_type;
 
     const int num_worker_threads = Experimental::HPX::concurrency();
@@ -95,10 +94,13 @@ public:
 
     auto &queue = scheduler->queue();
 
-    counting_semaphore sem(0);
+    std::atomic<std::size_t> num_tasks_remaining(num_worker_threads);
+    chunked_round_robin_executor exec(0, num_worker_threads,
+                                      num_worker_threads);
 
     for (int thread = 0; thread < num_worker_threads; ++thread) {
-      apply([this, &sem, &queue, &buffer, num_worker_threads, thread]() {
+      apply([this, &num_tasks_remaining, &queue, &buffer, num_worker_threads,
+             thread]() {
         // NOTE: This implementation has been simplified based on the
         // assumption that team_size = 1. The HPX backend currently only
         // supports a team size of 1.
@@ -128,11 +130,11 @@ public:
           }
         }
 
-        sem.signal(1);
+        --num_tasks_remaining;
       });
     }
 
-    sem.wait(num_worker_threads);
+    Experimental::HPX::impl_wait_until_zero(num_tasks_remaining);
   }
 
   static uint32_t get_max_team_count(execution_space const &espace) {
@@ -210,7 +212,7 @@ public:
   // Must provide task queue execution function
   void execute_task() const {
     using hpx::apply;
-    using hpx::lcos::local::counting_semaphore;
+    using hpx::parallel::execution::chunked_round_robin_executor;
     using task_base_type = typename scheduler_type::task_base;
     using queue_type = typename scheduler_type::queue_type;
 
@@ -224,10 +226,13 @@ public:
     auto &queue = scheduler->queue();
     queue.initialize_team_queues(num_worker_threads);
 
-    counting_semaphore sem(0);
+    std::atomic<std::size_t> num_tasks_remaining(num_worker_threads);
+    chunked_round_robin_executor exec(0, num_worker_threads,
+                                      num_worker_threads);
 
     for (int thread = 0; thread < num_worker_threads; ++thread) {
-      apply([this, &sem, &buffer, num_worker_threads, thread]() {
+      apply([this, &num_tasks_remaining, &buffer, num_worker_threads,
+             thread]() {
         // NOTE: This implementation has been simplified based on the assumption
         // that team_size = 1. The HPX backend currently only supports a team
         // size of 1.
@@ -265,11 +270,11 @@ public:
           }
         } while (task != no_more_tasks_sentinel);
 
-        sem.signal(1);
+        --num_tasks_remaining;
       });
     }
 
-    sem.wait(num_worker_threads);
+    Experimental::HPX::impl_wait_until_zero(num_tasks_remaining);
   }
 
   template <typename TaskType>

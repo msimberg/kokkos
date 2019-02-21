@@ -45,7 +45,6 @@
 #define KOKKOS_HPX_WORKGRAPHPOLICY_HPP
 
 #include <hpx/apply.hpp>
-#include <hpx/lcos/local/counting_semaphore.hpp>
 
 namespace Kokkos {
 namespace Impl {
@@ -83,12 +82,14 @@ public:
     const int num_worker_threads = Experimental::HPX::concurrency();
 
     using hpx::apply;
-    using hpx::lcos::local::counting_semaphore;
+    using hpx::parallel::execution::chunked_round_robin_executor;
 
-    counting_semaphore sem(0);
+    std::atomic<std::size_t> num_tasks_remaining(num_worker_threads);
+    chunked_round_robin_executor exec(0, num_worker_threads,
+                                      num_worker_threads);
 
     for (int thread = 0; thread < num_worker_threads; ++thread) {
-      apply([this, &sem]() {
+      apply([this, &num_tasks_remaining]() {
         std::int32_t w = m_policy.pop_work();
         while (w != Policy::COMPLETED_TOKEN) {
           if (w != Policy::END_TOKEN) {
@@ -99,11 +100,11 @@ public:
           w = m_policy.pop_work();
         }
 
-        sem.signal(1);
+        --num_tasks_remaining;
       });
     }
 
-    sem.wait(num_worker_threads);
+    Experimental::HPX::impl_wait_until_zero(num_tasks_remaining);
   }
 
   inline ParallelFor(const FunctorType &arg_functor, const Policy &arg_policy)
