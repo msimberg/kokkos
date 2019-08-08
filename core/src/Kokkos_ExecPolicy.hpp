@@ -219,11 +219,11 @@ class RangePolicy : public Impl::PolicyTraits<Properties...> {
     }
 
     member_type new_chunk_size = 1;
-    while (new_chunk_size * 100 * concurrency < m_end - m_begin)
+    while (new_chunk_size * 8 * concurrency < m_end - m_begin)
       new_chunk_size *= 2;
     if (new_chunk_size < 128) {
       new_chunk_size = 1;
-      while ((new_chunk_size * 40 * concurrency < m_end - m_begin) &&
+      while ((new_chunk_size * 2 * concurrency < m_end - m_begin) &&
              (new_chunk_size < 128))
         new_chunk_size *= 2;
     }
