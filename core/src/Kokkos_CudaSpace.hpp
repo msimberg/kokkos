@@ -409,7 +409,9 @@ struct DeepCopy<CudaSpace, CudaSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -422,7 +424,9 @@ struct DeepCopy<CudaSpace, HostSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -435,7 +439,9 @@ struct DeepCopy<HostSpace, CudaSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -448,7 +454,9 @@ struct DeepCopy<CudaSpace, CudaUVMSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -461,7 +469,9 @@ struct DeepCopy<CudaSpace, CudaHostPinnedSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -474,7 +484,9 @@ struct DeepCopy<CudaUVMSpace, CudaSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -487,7 +499,9 @@ struct DeepCopy<CudaUVMSpace, CudaUVMSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -500,7 +514,9 @@ struct DeepCopy<CudaUVMSpace, CudaHostPinnedSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -513,7 +529,9 @@ struct DeepCopy<CudaUVMSpace, HostSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -526,7 +544,9 @@ struct DeepCopy<CudaHostPinnedSpace, CudaSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -539,7 +559,9 @@ struct DeepCopy<CudaHostPinnedSpace, CudaUVMSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -552,7 +574,9 @@ struct DeepCopy<CudaHostPinnedSpace, CudaHostPinnedSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -565,7 +589,9 @@ struct DeepCopy<CudaHostPinnedSpace, HostSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -578,7 +604,9 @@ struct DeepCopy<HostSpace, CudaUVMSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
@@ -591,7 +619,9 @@ struct DeepCopy<HostSpace, CudaHostPinnedSpace, ExecutionSpace> {
 
   inline DeepCopy(const ExecutionSpace& exec, void* dst, const void* src,
                   size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
     exec.fence();
+#endif
     DeepCopyAsyncCuda(dst, src, n);
   }
 };
