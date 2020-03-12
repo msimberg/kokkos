@@ -117,9 +117,13 @@ DeepCopy<CudaSpace, HostSpace, Cuda>::DeepCopy(const Cuda &instance, void *dst,
 }
 
 void DeepCopyAsyncCuda(void *dst, const void *src, size_t n) {
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
   cudaStream_t s = get_deep_copy_stream();
+#endif
   CUDA_SAFE_CALL(cudaMemcpyAsync(dst, src, n, cudaMemcpyDefault, s));
+#ifdef KOKKOS_ENABLE_INTERNAL_FENCES
   cudaStreamSynchronize(s);
+#endif
 }
 
 }  // namespace Impl
