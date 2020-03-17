@@ -85,6 +85,7 @@
 #include <hpx/runtime/threads/threadmanager.hpp>
 #include <hpx/runtime/thread_pool_helpers.hpp>
 
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -177,9 +178,29 @@ namespace Experimental {
 class HPX {
  private:
   static bool m_hpx_initialized;
-  static Kokkos::Impl::thread_buffer m_buffer;
+  static std::atomic<uint32_t> m_next_instance_id;
+  uint32_t m_instance_id = 0;
+
 #if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
-  static hpx::future<void> m_future;
+ public:
+  enum class instance_mode { global, independent };
+  instance_mode m_mode;
+
+ private:
+  struct instance_data {
+    instance_data() = default;
+    instance_data(hpx::shared_future<void> future) : m_future(future) {}
+    Kokkos::Impl::thread_buffer m_buffer;
+    hpx::shared_future<void> m_future = hpx::make_ready_future<void>();
+  };
+
+  std::shared_ptr<instance_data> m_independent_instance_data;
+  static instance_data m_global_instance_data;
+
+  std::reference_wrapper<Kokkos::Impl::thread_buffer> m_buffer;
+  std::reference_wrapper<hpx::shared_future<void>> m_future;
+#else
+  static Kokkos::Impl::thread_buffer m_global_buffer;
 #endif
 
  public:
@@ -190,19 +211,79 @@ class HPX {
   using size_type            = memory_space::size_type;
   using scratch_memory_space = ScratchMemorySpace<HPX>;
 
+#if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
+
+  HPX()
+  noexcept
+      : m_instance_id(0),
+        m_mode(instance_mode::global),
+        m_buffer(m_global_instance_data.m_buffer),
+        m_future(m_global_instance_data.m_future) {}
+
+  HPX(instance_mode mode)
+      : m_instance_id(mode == instance_mode::independent ? m_next_instance_id++
+                                                         : 0),
+        m_mode(mode),
+        m_independent_instance_data(mode == instance_mode::independent
+                                        ? (new instance_data())
+                                        : nullptr),
+        m_buffer(mode == instance_mode::independent
+                     ? m_independent_instance_data->m_buffer
+                     : m_global_instance_data.m_buffer),
+        m_future(mode == instance_mode::independent
+                     ? m_independent_instance_data->m_future
+                     : m_global_instance_data.m_future) {}
+
+  HPX(hpx::shared_future<void> future)
+      : m_instance_id(m_next_instance_id++),
+        m_mode(instance_mode::independent),
+
+        m_independent_instance_data(new instance_data(future)),
+        m_buffer(m_independent_instance_data->m_buffer),
+        m_future(m_independent_instance_data->m_future) {}
+
+  HPX(const HPX &other)
+      : m_instance_id(other.m_instance_id),
+        m_mode(other.m_mode),
+        m_independent_instance_data(other.m_independent_instance_data),
+        m_buffer(other.m_buffer),
+        m_future(other.m_future) {}
+
+  HPX &operator=(const HPX &other) {
+    m_instance_id =
+        other.m_mode == instance_mode::independent ? m_next_instance_id++ : 0;
+    m_mode                      = other.m_mode;
+    m_independent_instance_data = other.m_independent_instance_data;
+    m_buffer                    = m_mode == instance_mode::independent
+                   ? m_independent_instance_data->m_buffer
+                   : m_global_instance_data.m_buffer;
+    m_future = m_mode == instance_mode::independent
+                   ? m_independent_instance_data->m_future
+                   : m_global_instance_data.m_future;
+    return *this;
+  }
+#else
   HPX() noexcept {}
+#endif
+
   static void print_configuration(std::ostream &,
                                   const bool /* verbose */ = false) {
     std::cout << "HPX backend" << std::endl;
   }
-  uint32_t impl_instance_id() const noexcept { return 0; }
+  uint32_t impl_instance_id() const noexcept { return m_instance_id; }
 
+#if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
+  static bool in_parallel(HPX const &instance = HPX()) noexcept {
+    return !instance.impl_get_future().is_ready();
+  }
+#else
   static bool in_parallel(HPX const & = HPX()) noexcept { return false; }
-  static void impl_static_fence(HPX const & = HPX())
+#endif
+  void impl_static_fence(HPX const & = HPX()) const
 #if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
   {
     if (hpx::threads::get_self_ptr() == nullptr) {
-      hpx::threads::run_as_hpx_thread([]() { impl_get_future().wait(); });
+      hpx::threads::run_as_hpx_thread([this]() { impl_get_future().wait(); });
     } else {
       impl_get_future().wait();
     }
@@ -287,12 +368,18 @@ class HPX {
     return hpx::get_worker_thread_num();
   }
 
-  static Kokkos::Impl::thread_buffer &impl_get_buffer() noexcept {
-    return m_buffer;
+  Kokkos::Impl::thread_buffer &impl_get_buffer() const noexcept {
+#if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
+    return m_buffer.get();
+#else
+    return m_global_buffer;
+#endif
   }
 
 #if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
-  static hpx::future<void> &impl_get_future() noexcept { return m_future; }
+  hpx::shared_future<void> &impl_get_future() const noexcept {
+    return m_future;
+  }
 #endif
 
   static constexpr const char *name() noexcept { return "HPX"; }
@@ -303,37 +390,43 @@ namespace Profiling {
 namespace Experimental {
 template <>
 struct DeviceTypeTraits<Kokkos::Experimental::HPX> {
-  constexpr static DeviceType id = DeviceType::HPX;
+  static constexpr DeviceType id = DeviceType::HPX;
 };
 }  // namespace Experimental
 }  // namespace Profiling
 
 namespace Impl {
-template <typename Closure>
-inline void dispatch_execute_task(Closure *closure) {
 #if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
+template <typename Closure>
+inline void dispatch_execute_task(Closure *closure,
+                                  Kokkos::Experimental::HPX const &instance) {
   if (hpx::threads::get_self_ptr() == nullptr) {
-    hpx::threads::run_as_hpx_thread([closure]() {
-      hpx::future<void> &fut = Kokkos::Experimental::HPX::impl_get_future();
-      Closure closure_copy   = *closure;
-      fut                    = fut.then([closure_copy](hpx::future<void> &&) {
+    hpx::threads::run_as_hpx_thread([closure, &instance]() {
+      hpx::shared_future<void> &fut = instance.impl_get_future();
+      Closure closure_copy          = *closure;
+      fut = fut.then([closure_copy](hpx::shared_future<void> &&) {
         closure_copy.execute_task();
       });
     });
   } else {
-    hpx::future<void> &fut = Kokkos::Experimental::HPX::impl_get_future();
-    Closure closure_copy   = *closure;
-    fut                    = fut.then(
-        [closure_copy](hpx::future<void> &&) { closure_copy.execute_task(); });
+    hpx::shared_future<void> &fut = instance.impl_get_future();
+    Closure closure_copy          = *closure;
+    fut = fut.then([closure_copy](hpx::shared_future<void> &&) {
+      closure_copy.execute_task();
+    });
   }
+}
 #else
+template <typename Closure>
+inline void dispatch_execute_task(Closure *closure,
+                                  Kokkos::Experimental::HPX const &) {
   if (hpx::threads::get_self_ptr() == nullptr) {
     hpx::threads::run_as_hpx_thread([closure]() { closure->execute_task(); });
   } else {
     closure->execute_task();
   }
-#endif
 }
+#endif
 }  // namespace Impl
 }  // namespace Kokkos
 
@@ -731,7 +824,9 @@ class ParallelFor<FunctorType, Kokkos::RangePolicy<Traits...>,
   }
 
  public:
-  void execute() const { Kokkos::Impl::dispatch_execute_task(this); }
+  void execute() const {
+    Kokkos::Impl::dispatch_execute_task(this, m_policy.space());
+  }
 
   void execute_task() const {
 #if KOKKOS_HPX_IMPLEMENTATION == 0
@@ -809,7 +904,7 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>,
   const Policy m_policy;
 
  public:
-  void execute() const { dispatch_execute_task(this); }
+  void execute() const { dispatch_execute_task(this, m_mdr_policy.space()); }
 
   inline void execute_task() const {
 #if KOKKOS_HPX_IMPLEMENTATION == 0
@@ -872,7 +967,8 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>,
   inline ParallelFor(const FunctorType &arg_functor, MDRangePolicy arg_policy)
       : m_functor(arg_functor),
         m_mdr_policy(arg_policy),
-        m_policy(Policy(0, m_mdr_policy.m_num_tiles).set_chunk_size(1)) {}
+        m_policy(Policy(arg_policy.space(), 0, m_mdr_policy.m_num_tiles)
+                     .set_chunk_size(1)) {}
 };
 }  // namespace Impl
 }  // namespace Kokkos
@@ -1019,7 +1115,7 @@ class ParallelReduce<FunctorType, Kokkos::RangePolicy<Traits...>, ReducerType,
   };
 
  public:
-  void execute() const { dispatch_execute_task(this); }
+  void execute() const { dispatch_execute_task(this, m_policy.space()); }
 
   inline void execute_task() const {
     const std::size_t value_size =
@@ -1062,7 +1158,7 @@ class ParallelReduce<FunctorType, Kokkos::RangePolicy<Traits...>, ReducerType,
 #elif KOKKOS_HPX_IMPLEMENTATION == 1
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
 
-    thread_buffer &buffer = Kokkos::Experimental::HPX::impl_get_buffer();
+    thread_buffer &buffer = m_policy.space().impl_get_buffer();
     buffer.resize(num_worker_threads, value_size);
 
     using hpx::apply;
@@ -1118,7 +1214,7 @@ class ParallelReduce<FunctorType, Kokkos::RangePolicy<Traits...>, ReducerType,
 #elif KOKKOS_HPX_IMPLEMENTATION == 2
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
 
-    thread_buffer &buffer = Kokkos::Experimental::HPX::impl_get_buffer();
+    thread_buffer &buffer = m_policy.space().impl_get_buffer();
     buffer.resize(num_worker_threads, value_size);
 
     using hpx::parallel::for_loop;
@@ -1236,14 +1332,14 @@ class ParallelReduce<FunctorType, Kokkos::MDRangePolicy<Traits...>, ReducerType,
   bool m_force_synchronous;
 
  public:
-  void execute() const { dispatch_execute_task(this); }
+  void execute() const { dispatch_execute_task(this, m_mdr_policy.space()); }
 
   inline void execute_task() const {
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
     const std::size_t value_size =
         Analysis::value_size(ReducerConditional::select(m_functor, m_reducer));
 
-    thread_buffer &buffer = Kokkos::Experimental::HPX::impl_get_buffer();
+    thread_buffer &buffer = m_policy.space().impl_get_buffer();
     buffer.resize(num_worker_threads, value_size);
 
 #if KOKKOS_HPX_IMPLEMENTATION == 0
@@ -1376,7 +1472,8 @@ class ParallelReduce<FunctorType, Kokkos::MDRangePolicy<Traits...>, ReducerType,
                               void *>::type = nullptr)
       : m_functor(arg_functor),
         m_mdr_policy(arg_policy),
-        m_policy(Policy(0, m_mdr_policy.m_num_tiles).set_chunk_size(1)),
+        m_policy(Policy(arg_policy.space(), 0, m_mdr_policy.m_num_tiles)
+                     .set_chunk_size(1)),
         m_reducer(InvalidType()),
         m_result_ptr(arg_view.data()),
         m_force_synchronous(!arg_view.impl_track().has_record()) {}
@@ -1385,7 +1482,8 @@ class ParallelReduce<FunctorType, Kokkos::MDRangePolicy<Traits...>, ReducerType,
                         MDRangePolicy arg_policy, const ReducerType &reducer)
       : m_functor(arg_functor),
         m_mdr_policy(arg_policy),
-        m_policy(Policy(0, m_mdr_policy.m_num_tiles).set_chunk_size(1)),
+        m_policy(Policy(arg_policy.space(), 0, m_mdr_policy.m_num_tiles)
+                     .set_chunk_size(1)),
         m_reducer(reducer),
         m_result_ptr(reducer.view().data()),
         m_force_synchronous(!reducer.view().impl_track().has_record()) {}
@@ -1440,14 +1538,14 @@ class ParallelScan<FunctorType, Kokkos::RangePolicy<Traits...>,
   }
 
  public:
-  void execute() const { dispatch_execute_task(this); }
+  void execute() const { dispatch_execute_task(this, m_policy.space()); }
 
   inline void execute_task() const {
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
     const int value_count        = Analysis::value_count(m_functor);
     const std::size_t value_size = Analysis::value_size(m_functor);
 
-    thread_buffer &buffer = Kokkos::Experimental::HPX::impl_get_buffer();
+    thread_buffer &buffer = m_policy.space().impl_get_buffer();
     buffer.resize(num_worker_threads, 2 * value_size);
 
     using hpx::apply;
@@ -1554,14 +1652,14 @@ class ParallelScanWithTotal<FunctorType, Kokkos::RangePolicy<Traits...>,
   }
 
  public:
-  void execute() const { dispatch_execute_task(this); }
+  void execute() const { dispatch_execute_task(this, m_policy.space()); }
 
   inline void execute_task() const {
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
     const int value_count        = Analysis::value_count(m_functor);
     const std::size_t value_size = Analysis::value_size(m_functor);
 
-    thread_buffer &buffer = Kokkos::Experimental::HPX::impl_get_buffer();
+    thread_buffer &buffer = m_policy.space().impl_get_buffer();
     buffer.resize(num_worker_threads, 2 * value_size);
 
     using hpx::apply;
@@ -1697,12 +1795,12 @@ class ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>,
   }
 
  public:
-  void execute() const { dispatch_execute_task(this); }
+  void execute() const { dispatch_execute_task(this, m_policy.space()); }
 
   inline void execute_task() const {
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
 
-    thread_buffer &buffer = Kokkos::Experimental::HPX::impl_get_buffer();
+    thread_buffer &buffer = m_policy.space().impl_get_buffer();
     buffer.resize(num_worker_threads, m_shared);
 
 #if KOKKOS_HPX_IMPLEMENTATION == 0
@@ -1864,14 +1962,14 @@ class ParallelReduce<FunctorType, Kokkos::TeamPolicy<Properties...>,
   }
 
  public:
-  void execute() const { dispatch_execute_task(this); }
+  void execute() const { dispatch_execute_task(this, m_policy.space()); }
 
   inline void execute_task() const {
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
     const std::size_t value_size =
         Analysis::value_size(ReducerConditional::select(m_functor, m_reducer));
 
-    thread_buffer &buffer = Kokkos::Experimental::HPX::impl_get_buffer();
+    thread_buffer &buffer = m_policy.space().impl_get_buffer();
     buffer.resize(num_worker_threads, value_size + m_shared);
 
 #if KOKKOS_HPX_IMPLEMENTATION == 0
