@@ -80,7 +80,8 @@ class TaskQueueSpecialization<
     // This is not necessarily the most efficient, but can be improved later.
     TaskQueueSpecialization<scheduler_type> task_queue;
     task_queue.scheduler = &scheduler;
-    Kokkos::Impl::dispatch_execute_task(&task_queue);
+    Kokkos::Impl::dispatch_execute_task(&task_queue,
+                                        Kokkos::Experimental::HPX());
     Kokkos::Experimental::HPX().fence();
   }
 
@@ -92,7 +93,7 @@ class TaskQueueSpecialization<
 
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
 
-    thread_buffer &buffer = Kokkos::Experimental::HPX::impl_get_buffer();
+    thread_buffer &buffer = Kokkos::Experimental::HPX().impl_get_buffer();
     buffer.resize(num_worker_threads, 512);
 
     auto &queue = scheduler->queue();
@@ -207,7 +208,8 @@ class TaskQueueSpecializationConstrained<
     // This is not necessarily the most efficient, but can be improved later.
     TaskQueueSpecializationConstrained<scheduler_type> task_queue;
     task_queue.scheduler = &scheduler;
-    Kokkos::Impl::dispatch_execute_task(&task_queue);
+    Kokkos::Impl::dispatch_execute_task(&task_queue,
+                                        Kokkos::Experimental::HPX());
     Kokkos::Experimental::HPX().fence();
   }
 
@@ -222,7 +224,7 @@ class TaskQueueSpecializationConstrained<
     static task_base_type *const end = (task_base_type *)task_base_type::EndTag;
     constexpr task_base_type *no_more_tasks_sentinel = nullptr;
 
-    thread_buffer &buffer = Kokkos::Experimental::HPX::impl_get_buffer();
+    thread_buffer &buffer = Kokkos::Experimental::HPX().impl_get_buffer();
     buffer.resize(num_worker_threads, 512);
 
     auto &queue = scheduler->queue();
