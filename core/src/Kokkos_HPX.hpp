@@ -178,7 +178,9 @@ class HPX {
   static bool m_hpx_initialized;
   static Kokkos::Impl::thread_buffer m_buffer;
 #if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
-  static hpx::future<void> m_future;
+  static hpx::shared_future<void> m_static_future;
+  hpx::shared_future<void> m_independent_future;
+  hpx::shared_future<void> &m_future;
 #endif
 
  public:
@@ -189,14 +191,31 @@ class HPX {
   using size_type            = memory_space::size_type;
   using scratch_memory_space = ScratchMemorySpace<HPX>;
 
-  HPX() noexcept {}
+  HPX(bool independent = false)
+  noexcept
+      : m_independent_future(hpx::make_ready_future<void>()),
+        m_future(independent ? m_independent_future : m_static_future) {
+    if (independent) {
+    } else {
+      m_future =
+    }
+  }
+  HPX(hpx::shared_future<void> future)
+  noexcept : m_independent_future(future), m_future(m_independent_future) {}
+
   static void print_configuration(std::ostream &,
                                   const bool /* verbose */ = false) {
     std::cout << "HPX backend" << std::endl;
   }
   uint32_t impl_instance_id() const noexcept { return 0; }
 
-  static bool in_parallel(HPX const & = HPX()) noexcept { return false; }
+  static bool in_parallel(HPX const & = HPX()) noexcept {
+#if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
+    return !impl_get_future().is_ready();
+#else
+    return false;
+#endif
+  }
   static void impl_static_fence(HPX const & = HPX())
 #if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
   {
@@ -291,7 +310,9 @@ class HPX {
   }
 
 #if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
-  static hpx::future<void> &impl_get_future() noexcept { return m_future; }
+  static hpx::shared_future<void> &impl_get_future() noexcept {
+    return m_future;
+  }
 #endif
 
   static constexpr const char *name() noexcept { return "HPX"; }
@@ -313,17 +334,20 @@ inline void dispatch_execute_task(Closure *closure) {
 #if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
   if (hpx::threads::get_self_ptr() == nullptr) {
     hpx::threads::run_as_hpx_thread([closure]() {
-      hpx::future<void> &fut = Kokkos::Experimental::HPX::impl_get_future();
-      Closure closure_copy   = *closure;
-      fut                    = fut.then([closure_copy](hpx::future<void> &&) {
+      hpx::shared_future<void> &fut =
+          Kokkos::Experimental::HPX::impl_get_future();
+      Closure closure_copy = *closure;
+      fut = fut.then([closure_copy](hpx::shared_future<void> &&) {
         closure_copy.execute_task();
       });
     });
   } else {
-    hpx::future<void> &fut = Kokkos::Experimental::HPX::impl_get_future();
-    Closure closure_copy   = *closure;
-    fut                    = fut.then(
-        [closure_copy](hpx::future<void> &&) { closure_copy.execute_task(); });
+    hpx::shared_future<void> &fut =
+        Kokkos::Experimental::HPX::impl_get_future();
+    Closure closure_copy = *closure;
+    fut = fut.then([closure_copy](hpx::shared_future<void> &&) {
+      closure_copy.execute_task();
+    });
   }
 #else
   if (hpx::threads::get_self_ptr() == nullptr) {
