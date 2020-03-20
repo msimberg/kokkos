@@ -306,7 +306,9 @@ namespace Impl {
 template <class ExecutionSpace>
 struct DeepCopy<HostSpace, HostSpace, ExecutionSpace> {
   DeepCopy(void* dst, const void* src, size_t n) {
+    Kokkos::fence();
     hostspace_parallel_deepcopy(dst, src, n);
+    Kokkos::fence();
   }
 
   DeepCopy(const ExecutionSpace& exec, void* dst, const void* src, size_t n) {

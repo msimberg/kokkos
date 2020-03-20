@@ -3418,6 +3418,7 @@ create_mirror_view_and_copy(
         Impl::MirrorViewType<Space, T, P...>::is_same_memspace>::type* =
         nullptr) {
   (void)name;
+  typename Space::execution_space().fence();
   return src;
 }
 
