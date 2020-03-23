@@ -182,9 +182,11 @@ class HPX {
   uint32_t m_instance_id = 0;
 
 #if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
+ public:
   enum class instance_mode { global, independent };
   instance_mode m_mode;
 
+ private:
   static Kokkos::Impl::thread_buffer m_global_buffer;
   Kokkos::Impl::thread_buffer m_independent_buffer;
   std::reference_wrapper<Kokkos::Impl::thread_buffer> m_buffer;
