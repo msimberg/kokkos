@@ -187,12 +187,17 @@ class HPX {
   instance_mode m_mode;
 
  private:
-  static Kokkos::Impl::thread_buffer m_global_buffer;
-  Kokkos::Impl::thread_buffer m_independent_buffer;
-  std::reference_wrapper<Kokkos::Impl::thread_buffer> m_buffer;
+  struct instance_data {
+    instance_data() = default;
+    instance_data(hpx::shared_future<void> future) : m_future(future) {}
+    Kokkos::Impl::thread_buffer m_buffer;
+    hpx::shared_future<void> m_future = hpx::make_ready_future<void>();
+  };
 
-  static hpx::shared_future<void> m_global_future;
-  hpx::shared_future<void> m_independent_future;
+  std::shared_ptr<instance_data> m_independent_instance_data;
+  static instance_data m_global_instance_data;
+
+  std::reference_wrapper<Kokkos::Impl::thread_buffer> m_buffer;
   std::reference_wrapper<hpx::shared_future<void>> m_future;
 #else
   static Kokkos::Impl::thread_buffer m_global_buffer;
@@ -212,47 +217,49 @@ class HPX {
   noexcept
       : m_instance_id(0),
         m_mode(instance_mode::global),
-        m_independent_buffer(),
-        m_buffer(m_global_buffer),
-        m_future(m_global_future) {}
+        m_buffer(m_global_instance_data.m_buffer),
+        m_future(m_global_instance_data.m_future) {}
 
   HPX(instance_mode mode)
       : m_instance_id(mode == instance_mode::independent ? m_next_instance_id++
                                                          : 0),
         m_mode(mode),
-        m_buffer(mode == instance_mode::independent ? m_independent_buffer
-                                                    : m_global_buffer),
-        m_independent_future(hpx::make_ready_future<void>()),
-        m_future(mode == instance_mode::independent ? m_independent_future
-                                                    : m_global_future) {}
+        m_independent_instance_data(mode == instance_mode::independent
+                                        ? (new instance_data())
+                                        : nullptr),
+        m_buffer(mode == instance_mode::independent
+                     ? m_independent_instance_data->m_buffer
+                     : m_global_instance_data.m_buffer),
+        m_future(mode == instance_mode::independent
+                     ? m_independent_instance_data->m_future
+                     : m_global_instance_data.m_future) {}
 
   HPX(hpx::shared_future<void> future)
       : m_instance_id(m_next_instance_id++),
         m_mode(instance_mode::independent),
-        m_buffer(m_independent_buffer),
-        m_independent_future(future),
-        m_future(m_independent_future) {}
+
+        m_independent_instance_data(new instance_data(future)),
+        m_buffer(m_independent_instance_data->m_buffer),
+        m_future(m_independent_instance_data->m_future) {}
 
   HPX(const HPX &other)
-      : m_instance_id(other.m_mode == instance_mode::independent
-                          ? m_next_instance_id++
-                          : 0),
+      : m_instance_id(other.m_instance_id),
         m_mode(other.m_mode),
-        m_buffer(m_mode == instance_mode::independent ? m_independent_buffer
-                                                      : m_global_buffer),
-        m_independent_future(other.m_independent_future),
-        m_future(m_mode == instance_mode::independent ? m_independent_future
-                                                      : m_global_future) {}
+        m_independent_instance_data(other.m_independent_instance_data),
+        m_buffer(other.m_buffer),
+        m_future(other.m_future) {}
 
   HPX &operator=(const HPX &other) {
     m_instance_id =
         other.m_mode == instance_mode::independent ? m_next_instance_id++ : 0;
-    m_mode   = other.m_mode;
-    m_buffer = m_mode == instance_mode::independent ? m_independent_buffer
-                                                    : m_global_buffer;
-    m_independent_future = other.m_independent_future;
-    m_future = m_mode == instance_mode::independent ? m_independent_future
-                                                    : m_global_future;
+    m_mode                      = other.m_mode;
+    m_independent_instance_data = other.m_independent_instance_data;
+    m_buffer                    = m_mode == instance_mode::independent
+                   ? m_independent_instance_data->m_buffer
+                   : m_global_instance_data.m_buffer;
+    m_future = m_mode == instance_mode::independent
+                   ? m_independent_instance_data->m_future
+                   : m_global_instance_data.m_future;
     return *this;
   }
 #else
@@ -897,7 +904,7 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>,
   const Policy m_policy;
 
  public:
-  void execute() const { dispatch_execute_task(this, m_policy.space()); }
+  void execute() const { dispatch_execute_task(this, m_mdr_policy.space()); }
 
   inline void execute_task() const {
 #if KOKKOS_HPX_IMPLEMENTATION == 0
@@ -960,7 +967,8 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>,
   inline ParallelFor(const FunctorType &arg_functor, MDRangePolicy arg_policy)
       : m_functor(arg_functor),
         m_mdr_policy(arg_policy),
-        m_policy(Policy(0, m_mdr_policy.m_num_tiles).set_chunk_size(1)) {}
+        m_policy(Policy(arg_policy.space(), 0, m_mdr_policy.m_num_tiles)
+                     .set_chunk_size(1)) {}
 };
 }  // namespace Impl
 }  // namespace Kokkos
@@ -1324,7 +1332,7 @@ class ParallelReduce<FunctorType, Kokkos::MDRangePolicy<Traits...>, ReducerType,
   bool m_force_synchronous;
 
  public:
-  void execute() const { dispatch_execute_task(this, m_policy.space()); }
+  void execute() const { dispatch_execute_task(this, m_mdr_policy.space()); }
 
   inline void execute_task() const {
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
@@ -1464,7 +1472,8 @@ class ParallelReduce<FunctorType, Kokkos::MDRangePolicy<Traits...>, ReducerType,
                               void *>::type = nullptr)
       : m_functor(arg_functor),
         m_mdr_policy(arg_policy),
-        m_policy(Policy(0, m_mdr_policy.m_num_tiles).set_chunk_size(1)),
+        m_policy(Policy(arg_policy.space(), 0, m_mdr_policy.m_num_tiles)
+                     .set_chunk_size(1)),
         m_reducer(InvalidType()),
         m_result_ptr(arg_view.data()),
         m_force_synchronous(!arg_view.impl_track().has_record()) {}
@@ -1473,7 +1482,8 @@ class ParallelReduce<FunctorType, Kokkos::MDRangePolicy<Traits...>, ReducerType,
                         MDRangePolicy arg_policy, const ReducerType &reducer)
       : m_functor(arg_functor),
         m_mdr_policy(arg_policy),
-        m_policy(Policy(0, m_mdr_policy.m_num_tiles).set_chunk_size(1)),
+        m_policy(Policy(arg_policy.space(), 0, m_mdr_policy.m_num_tiles)
+                     .set_chunk_size(1)),
         m_reducer(reducer),
         m_result_ptr(reducer.view().data()),
         m_force_synchronous(!reducer.view().impl_track().has_record()) {}
