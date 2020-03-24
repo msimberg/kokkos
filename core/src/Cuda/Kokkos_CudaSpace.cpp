@@ -98,6 +98,26 @@ DeepCopy<CudaSpace, HostSpace, Cuda>::DeepCopy(void *dst, const void *src,
   CUDA_SAFE_CALL(cudaMemcpy(dst, src, n, cudaMemcpyDefault));
 }
 
+DeepCopy<HostSpace, CudaHostPinnedSpace, Cuda>::DeepCopy(void *dst, const void *src,
+                                               size_t n) {
+  CUDA_SAFE_CALL(cudaMemcpy(dst, src, n, cudaMemcpyDefault));
+}
+
+DeepCopy<CudaHostPinnedSpace, HostSpace, Cuda>::DeepCopy(void *dst, const void *src,
+                                               size_t n) {
+  CUDA_SAFE_CALL(cudaMemcpy(dst, src, n, cudaMemcpyDefault));
+}
+
+DeepCopy<CudaSpace, CudaHostPinnedSpace, Cuda>::DeepCopy(void *dst, const void *src,
+                                               size_t n) {
+  CUDA_SAFE_CALL(cudaMemcpy(dst, src, n, cudaMemcpyDefault));
+}
+
+DeepCopy<CudaHostPinnedSpace, CudaSpace, Cuda>::DeepCopy(void *dst, const void *src,
+                                               size_t n) {
+  CUDA_SAFE_CALL(cudaMemcpy(dst, src, n, cudaMemcpyDefault));
+}
+
 DeepCopy<CudaSpace, CudaSpace, Cuda>::DeepCopy(const Cuda &instance, void *dst,
                                                const void *src, size_t n) {
   CUDA_SAFE_CALL(
@@ -111,6 +131,30 @@ DeepCopy<HostSpace, CudaSpace, Cuda>::DeepCopy(const Cuda &instance, void *dst,
 }
 
 DeepCopy<CudaSpace, HostSpace, Cuda>::DeepCopy(const Cuda &instance, void *dst,
+                                               const void *src, size_t n) {
+  CUDA_SAFE_CALL(
+      cudaMemcpyAsync(dst, src, n, cudaMemcpyDefault, instance.cuda_stream()));
+}
+
+DeepCopy<HostSpace, CudaHostPinnedSpace, Cuda>::DeepCopy(const Cuda &instance, void *dst,
+                                               const void *src, size_t n) {
+  CUDA_SAFE_CALL(
+      cudaMemcpyAsync(dst, src, n, cudaMemcpyDefault, instance.cuda_stream()));
+}
+
+DeepCopy<CudaHostPinnedSpace, HostSpace, Cuda>::DeepCopy(const Cuda &instance, void *dst,
+                                               const void *src, size_t n) {
+  CUDA_SAFE_CALL(
+      cudaMemcpyAsync(dst, src, n, cudaMemcpyDefault, instance.cuda_stream()));
+}
+
+DeepCopy<CudaSpace, CudaHostPinnedSpace, Cuda>::DeepCopy(const Cuda &instance, void *dst,
+                                               const void *src, size_t n) {
+  CUDA_SAFE_CALL(
+      cudaMemcpyAsync(dst, src, n, cudaMemcpyDefault, instance.cuda_stream()));
+}
+
+DeepCopy<CudaHostPinnedSpace, CudaSpace, Cuda>::DeepCopy(const Cuda &instance, void *dst,
                                                const void *src, size_t n) {
   CUDA_SAFE_CALL(
       cudaMemcpyAsync(dst, src, n, cudaMemcpyDefault, instance.cuda_stream()));

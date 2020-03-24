@@ -401,6 +401,30 @@ struct DeepCopy<HostSpace, CudaSpace, Cuda> {
   DeepCopy(const Cuda&, void* dst, const void* src, size_t);
 };
 
+template <>
+struct DeepCopy<CudaHostPinnedSpace, HostSpace, Cuda> {
+  DeepCopy(void* dst, const void* src, size_t);
+  DeepCopy(const Cuda&, void* dst, const void* src, size_t);
+};
+
+template <>
+struct DeepCopy<HostSpace, CudaHostPinnedSpace, Cuda> {
+  DeepCopy(void* dst, const void* src, size_t);
+  DeepCopy(const Cuda&, void* dst, const void* src, size_t);
+};
+
+template <>
+struct DeepCopy<CudaHostPinnedSpace, CudaSpace, Cuda> {
+  DeepCopy(void* dst, const void* src, size_t);
+  DeepCopy(const Cuda&, void* dst, const void* src, size_t);
+};
+
+template <>
+struct DeepCopy<CudaSpace, CudaHostPinnedSpace, Cuda> {
+  DeepCopy(void* dst, const void* src, size_t);
+  DeepCopy(const Cuda&, void* dst, const void* src, size_t);
+};
+
 template <class ExecutionSpace>
 struct DeepCopy<CudaSpace, CudaSpace, ExecutionSpace> {
   inline DeepCopy(void* dst, const void* src, size_t n) {
