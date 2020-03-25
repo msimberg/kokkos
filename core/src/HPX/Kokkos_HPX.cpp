@@ -57,7 +57,7 @@ std::atomic<uint32_t> HPX::m_next_instance_id{1};
 #if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
 HPX::instance_data HPX::m_global_instance_data;
 #else
-thread_buffer HPX::m_global_buffer;
+Kokkos::Impl::thread_buffer HPX::m_global_buffer;
 #endif
 
 int HPX::concurrency() {
