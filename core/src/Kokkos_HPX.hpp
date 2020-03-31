@@ -113,6 +113,28 @@
 #error "You have chosen an invalid value for KOKKOS_HPX_IMPLEMENTATION"
 #endif
 
+// [note 1]
+//
+// When using the asynchronous backend and independent instances, we explicitly
+// reset the shared data at the end of a parallel task (execute_task). We do
+// this to avoid circular references with shared pointers that would otherwise
+// never be released.
+//
+// The HPX instance holds shared data for the instance in a shared_ptr. One of
+// the pieces of shared data is the future that we use to sequence parallel
+// dispatches. When a parallel task is launched, a copy of the closure
+// (ParallelFor, ParallelReduce, etc.) is captured in the task. The closure
+// also holds the policy, the policy holds the HPX instance, the instance holds
+// the shared data (for use of buffers in the parallel task). When attaching a
+// continuation to a future, the continuation is stored in the future (shared
+// state). This means that there is a cycle future -> continuation -> closure
+// -> policy -> HPX -> shared data -> future. We break this by releasing the
+// shared data early, as (the pointer to) the shared data will not be used
+// anymore by the closure at the end of execute_task.
+//
+// We also mark the shared instance data as mutable so that we can reset it
+// from the const execute_task member function.
+
 namespace Kokkos {
 namespace Impl {
 class thread_buffer {
@@ -194,7 +216,7 @@ class HPX {
     hpx::shared_future<void> m_future = hpx::make_ready_future<void>();
   };
 
-  std::shared_ptr<instance_data> m_independent_instance_data;
+  mutable std::shared_ptr<instance_data> m_independent_instance_data;
   static instance_data m_global_instance_data;
 
   std::reference_wrapper<Kokkos::Impl::thread_buffer> m_buffer;
@@ -381,6 +403,21 @@ class HPX {
     return m_future;
   }
 #endif
+
+  struct reset_shared_data_on_exit {
+#if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
+    HPX const &m_space;
+    KOKKOS_ATTRIBUTE_NODISCARD reset_shared_data_on_exit(HPX const &space)
+        : m_space(space) {}
+    ~reset_shared_data_on_exit() {
+      // See [note 1] for an explanation. m_independent_instance_data is
+      // marked mutable.
+      m_space.m_independent_instance_data.reset();
+    }
+#else
+    KOKKOS_ATTRIBUTE_NODISCARD reset_shared_data_on_exit(HPX const &) {}
+#endif
+  };
 
   static constexpr const char *name() noexcept { return "HPX"; }
 };
@@ -829,6 +866,10 @@ class ParallelFor<FunctorType, Kokkos::RangePolicy<Traits...>,
   }
 
   void execute_task() const {
+    // See [note 1] for an explanation.
+    Kokkos::Experimental::HPX::reset_shared_data_on_exit reset_on_exit(
+        m_policy.space());
+
 #if KOKKOS_HPX_IMPLEMENTATION == 0
     using hpx::parallel::for_loop;
     using hpx::parallel::execution::par;
@@ -907,6 +948,9 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>,
   void execute() const { dispatch_execute_task(this, m_mdr_policy.space()); }
 
   inline void execute_task() const {
+    // See [note 1] for an explanation.
+    Kokkos::Experimental::HPX::reset_shared_data_on_exit(m_mdr_policy.space());
+
 #if KOKKOS_HPX_IMPLEMENTATION == 0
     using hpx::parallel::for_loop;
     using hpx::parallel::execution::par;
@@ -967,8 +1011,7 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>,
   inline ParallelFor(const FunctorType &arg_functor, MDRangePolicy arg_policy)
       : m_functor(arg_functor),
         m_mdr_policy(arg_policy),
-        m_policy(Policy(arg_policy.space(), 0, m_mdr_policy.m_num_tiles)
-                     .set_chunk_size(1)) {}
+        m_policy(Policy(0, m_mdr_policy.m_num_tiles).set_chunk_size(1)) {}
 };
 }  // namespace Impl
 }  // namespace Kokkos
@@ -1118,6 +1161,9 @@ class ParallelReduce<FunctorType, Kokkos::RangePolicy<Traits...>, ReducerType,
   void execute() const { dispatch_execute_task(this, m_policy.space()); }
 
   inline void execute_task() const {
+    // See [note 1] for an explanation.
+    Kokkos::Experimental::HPX::reset_shared_data_on_exit(m_policy.space());
+
     const std::size_t value_size =
         Analysis::value_size(ReducerConditional::select(m_functor, m_reducer));
 
@@ -1335,11 +1381,14 @@ class ParallelReduce<FunctorType, Kokkos::MDRangePolicy<Traits...>, ReducerType,
   void execute() const { dispatch_execute_task(this, m_mdr_policy.space()); }
 
   inline void execute_task() const {
+    // See [note 1] for an explanation.
+    Kokkos::Experimental::HPX::reset_shared_data_on_exit(m_mdr_policy.space());
+
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
     const std::size_t value_size =
         Analysis::value_size(ReducerConditional::select(m_functor, m_reducer));
 
-    thread_buffer &buffer = m_policy.space().impl_get_buffer();
+    thread_buffer &buffer = m_mdr_policy.space().impl_get_buffer();
     buffer.resize(num_worker_threads, value_size);
 
 #if KOKKOS_HPX_IMPLEMENTATION == 0
@@ -1472,8 +1521,7 @@ class ParallelReduce<FunctorType, Kokkos::MDRangePolicy<Traits...>, ReducerType,
                               void *>::type = nullptr)
       : m_functor(arg_functor),
         m_mdr_policy(arg_policy),
-        m_policy(Policy(arg_policy.space(), 0, m_mdr_policy.m_num_tiles)
-                     .set_chunk_size(1)),
+        m_policy(Policy(m_mdr_policy.m_num_tiles).set_chunk_size(1)),
         m_reducer(InvalidType()),
         m_result_ptr(arg_view.data()),
         m_force_synchronous(!arg_view.impl_track().has_record()) {}
@@ -1482,8 +1530,7 @@ class ParallelReduce<FunctorType, Kokkos::MDRangePolicy<Traits...>, ReducerType,
                         MDRangePolicy arg_policy, const ReducerType &reducer)
       : m_functor(arg_functor),
         m_mdr_policy(arg_policy),
-        m_policy(Policy(arg_policy.space(), 0, m_mdr_policy.m_num_tiles)
-                     .set_chunk_size(1)),
+        m_policy(Policy(m_mdr_policy.m_num_tiles).set_chunk_size(1)),
         m_reducer(reducer),
         m_result_ptr(reducer.view().data()),
         m_force_synchronous(!reducer.view().impl_track().has_record()) {}
@@ -1541,6 +1588,9 @@ class ParallelScan<FunctorType, Kokkos::RangePolicy<Traits...>,
   void execute() const { dispatch_execute_task(this, m_policy.space()); }
 
   inline void execute_task() const {
+    // See [note 1] for an explanation.
+    Kokkos::Experimental::HPX::reset_shared_data_on_exit(m_policy.space());
+
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
     const int value_count        = Analysis::value_count(m_functor);
     const std::size_t value_size = Analysis::value_size(m_functor);
@@ -1655,6 +1705,9 @@ class ParallelScanWithTotal<FunctorType, Kokkos::RangePolicy<Traits...>,
   void execute() const { dispatch_execute_task(this, m_policy.space()); }
 
   inline void execute_task() const {
+    // See [note 1] for an explanation.
+    Kokkos::Experimental::HPX::reset_shared_data_on_exit(m_policy.space());
+
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
     const int value_count        = Analysis::value_count(m_functor);
     const std::size_t value_size = Analysis::value_size(m_functor);
@@ -1798,6 +1851,9 @@ class ParallelFor<FunctorType, Kokkos::TeamPolicy<Properties...>,
   void execute() const { dispatch_execute_task(this, m_policy.space()); }
 
   inline void execute_task() const {
+    // See [note 1] for an explanation.
+    Kokkos::Experimental::HPX::reset_shared_data_on_exit(m_policy.space());
+
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
 
     thread_buffer &buffer = m_policy.space().impl_get_buffer();
@@ -1965,6 +2021,9 @@ class ParallelReduce<FunctorType, Kokkos::TeamPolicy<Properties...>,
   void execute() const { dispatch_execute_task(this, m_policy.space()); }
 
   inline void execute_task() const {
+    // See [note 1] for an explanation.
+    Kokkos::Experimental::HPX::reset_shared_data_on_exit(m_policy.space());
+
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
     const std::size_t value_size =
         Analysis::value_size(ReducerConditional::select(m_functor, m_reducer));
