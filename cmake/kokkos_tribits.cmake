@@ -137,6 +137,10 @@ FUNCTION(KOKKOS_ADD_EXECUTABLE ROOT_NAME)
     #All executables must link to all the kokkos targets
     #This is just private linkage because exe is final
     TARGET_LINK_LIBRARIES(${EXE_NAME} PRIVATE Kokkos::kokkos)
+    if(Kokkos_ENABLE_HPX)
+      TARGET_PRECOMPILE_HEADERS(${EXE_NAME} REUSE_FROM kokkosexepch)
+      TARGET_COMPILE_DEFINITIONS(${EXE_NAME} PRIVATE HPX_APPLICATION_NAME_DEFAULT=kokkosexepch)
+    endif()
   endif()
 ENDFUNCTION()
 

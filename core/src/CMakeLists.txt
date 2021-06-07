@@ -72,6 +72,41 @@ KOKKOS_ADD_LIBRARY(
   ADD_BUILD_OPTIONS # core should be given all the necessary compiler/linker flags
 )
 
+if(Kokkos_ENABLE_HPX)
+  add_library(kokkoslibpch OBJECT dummy.cpp)
+  add_executable(kokkosexepch dummyexe.cpp)
+  
+  target_link_libraries(kokkoslibpch PRIVATE HPX::hpx)
+  target_link_libraries(kokkosexepch PRIVATE HPX::hpx)
+
+  target_compile_options(kokkoslibpch PRIVATE ${KOKKOS_COMPILE_OPTIONS})
+  target_compile_options(kokkosexepch PRIVATE ${KOKKOS_COMPILE_OPTIONS})
+  
+  target_precompile_headers(kokkoslibpch PRIVATE
+    <hpx/local/algorithm.hpp>
+    <hpx/local/barrier.hpp>
+    <hpx/local/execution.hpp>
+    <hpx/local/functional.hpp>
+    <hpx/local/future.hpp>
+    <hpx/local/latch.hpp>
+    <hpx/local/mutex.hpp>
+    <hpx/local/runtime.hpp>
+  )
+  
+  target_precompile_headers(kokkosexepch PRIVATE
+    <hpx/local/algorithm.hpp>
+    <hpx/local/barrier.hpp>
+    <hpx/local/execution.hpp>
+    <hpx/local/functional.hpp>
+    <hpx/local/future.hpp>
+    <hpx/local/latch.hpp>
+    <hpx/local/mutex.hpp>
+    <hpx/local/runtime.hpp>
+  )
+  
+  target_precompile_headers(kokkoscore REUSE_FROM kokkoslibpch)
+endif()
+
 KOKKOS_LIB_INCLUDE_DIRECTORIES(kokkoscore
   ${KOKKOS_TOP_BUILD_DIR}
   ${CMAKE_CURRENT_BINARY_DIR}

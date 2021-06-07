@@ -47,7 +47,7 @@
 #ifdef KOKKOS_ENABLE_HPX
 #include <Kokkos_HPX.hpp>
 
-#include <hpx/init.hpp>
+#include <hpx/local/init.hpp>
 #include <hpx/local/thread.hpp>
 
 namespace Kokkos {
