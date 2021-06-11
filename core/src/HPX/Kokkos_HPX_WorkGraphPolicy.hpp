@@ -47,8 +47,8 @@
 
 #include <Kokkos_HPX.hpp>
 
-#include <hpx/local/future.hpp>
-#include <hpx/local/latch.hpp>
+#include <hpx/local/algorithm.hpp>
+#include <hpx/local/execution.hpp>
 
 namespace Kokkos {
 namespace Impl {
@@ -85,29 +85,24 @@ class ParallelFor<FunctorType, Kokkos::WorkGraphPolicy<Traits...>,
   void execute_task() const {
     const int num_worker_threads = Kokkos::Experimental::HPX::concurrency();
 
-    using hpx::apply;
-    using hpx::lcos::local::latch;
+    using hpx::for_loop;
+    using hpx::execution::par;
+    using hpx::execution::static_chunk_size;
 
-    latch num_tasks_remaining(num_worker_threads);
-    ChunkedRoundRobinExecutor exec(num_worker_threads);
+    auto exec = Kokkos::Experimental::HPX::impl_get_executor();
 
-    for (int thread = 0; thread < num_worker_threads; ++thread) {
-      apply(exec, [this, &num_tasks_remaining]() {
-        std::int32_t w = m_policy.pop_work();
-        while (w != Policy::COMPLETED_TOKEN) {
-          if (w != Policy::END_TOKEN) {
-            execute_functor<WorkTag>(w);
-            m_policy.completed_work(w);
-          }
+    for_loop(par.on(exec).with(static_chunk_size(1)), 0, num_worker_threads,
+             [this](int thread) {
+               std::int32_t w = m_policy.pop_work();
+               while (w != Policy::COMPLETED_TOKEN) {
+                 if (w != Policy::END_TOKEN) {
+                   execute_functor<WorkTag>(w);
+                   m_policy.completed_work(w);
+                 }
 
-          w = m_policy.pop_work();
-        }
-
-        num_tasks_remaining.count_down(1);
-      });
-    }
-
-    num_tasks_remaining.wait();
+                 w = m_policy.pop_work();
+               }
+             });
   }
 
   inline ParallelFor(const FunctorType &arg_functor, const Policy &arg_policy)

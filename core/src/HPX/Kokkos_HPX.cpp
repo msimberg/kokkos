@@ -47,8 +47,17 @@
 #ifdef KOKKOS_ENABLE_HPX
 #include <Kokkos_HPX.hpp>
 
+#include <hpx/local/condition_variable.hpp>
 #include <hpx/local/init.hpp>
 #include <hpx/local/thread.hpp>
+#include <hpx/local/mutex.hpp>
+
+#include <atomic>
+#include <chrono>
+#include <iostream>
+#include <memory>
+#include <string>
+#include <type_traits>
 
 namespace Kokkos {
 namespace Experimental {
@@ -56,9 +65,12 @@ namespace Experimental {
 bool HPX::m_hpx_initialized = false;
 std::atomic<uint32_t> HPX::m_next_instance_id{1};
 #if defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
-std::atomic<uint32_t> HPX::m_active_parallel_region_count{0};
+uint32_t HPX::m_active_parallel_region_count{0};
+hpx::spinlock HPX::m_active_parallel_region_count_mutex;
+hpx::condition_variable_any HPX::m_active_parallel_region_count_cond;
 HPX::instance_data HPX::m_global_instance_data;
 #else
+std::unique_ptr<hpx::execution::experimental::fork_join_executor> HPX::m_exec{};
 Kokkos::Impl::thread_buffer HPX::m_global_buffer;
 #endif
 
@@ -92,6 +104,14 @@ void HPX::impl_initialize(int thread_count) {
 
     m_hpx_initialized = true;
   }
+
+#if !defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
+  m_exec = std::make_unique<hpx::execution::experimental::fork_join_executor>(
+      hpx::threads::thread_priority::normal,
+      hpx::threads::thread_stacksize::small_,
+      hpx::execution::experimental::fork_join_executor::loop_schedule::static_,
+      std::chrono::nanoseconds{1000});
+#endif
 }
 
 void HPX::impl_initialize() {
@@ -110,6 +130,14 @@ void HPX::impl_initialize() {
 
     m_hpx_initialized = true;
   }
+
+#if !defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
+  m_exec = std::make_unique<hpx::execution::experimental::fork_join_executor>(
+      hpx::threads::thread_priority::normal,
+      hpx::threads::thread_stacksize::small_,
+      hpx::execution::experimental::fork_join_executor::loop_schedule::static_,
+      std::chrono::nanoseconds{1000});
+#endif
 }
 
 bool HPX::impl_is_initialized() noexcept {
@@ -118,6 +146,10 @@ bool HPX::impl_is_initialized() noexcept {
 }
 
 void HPX::impl_finalize() {
+#if !defined(KOKKOS_ENABLE_HPX_ASYNC_DISPATCH)
+  m_exec.reset();
+#endif
+
   if (m_hpx_initialized) {
     hpx::runtime *rt = hpx::get_runtime_ptr();
     if (rt != nullptr) {
