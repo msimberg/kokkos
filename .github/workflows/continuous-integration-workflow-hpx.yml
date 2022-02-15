@@ -17,7 +17,7 @@ jobs:
         with:
           path: kokkos
       - name: setup hpx dependencies
-        run:  sudo apt update && sudo apt install hwloc libboost-all-dev clang
+        run:  sudo apt update && sudo apt install clang hwloc libasio-dev libboost-all-dev ninja-build
       - name: checkout hpx
         uses: actions/checkout@v2.2.0
         with:
@@ -36,25 +36,28 @@ jobs:
           mkdir -p hpx/{build,install}
           cd hpx/build
           cmake \
+            -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=$PWD/../install \
             -DCMAKE_CXX_COMPILER=clang++ \
-            -DHPX_WITH_COMPILE_ONLY_TESTS=OFF \
-            -DHPX_WITH_EXAMPLES=OFF \
-            -DHPX_WITH_FETCH_ASIO=ON \
+            -DHPX_WITH_UNITY_BUILD=ON \
             -DHPX_WITH_MALLOC=system \
+            -DHPX_WITH_NETWORKING=OFF \
             -DHPX_WITH_EXAMPLES=OFF \
             -DHPX_WITH_TESTS=OFF \
             ..
       - name: build and install hpx
         if: steps.cache-hpx.outputs.cache-hit != 'true'
         working-directory: hpx/build
-        run: make -j2 install
+        run: ninja install
 
       - name: configure kokkos
         run: |
           mkdir -p kokkos/{build,install}
           cd kokkos/build
           cmake \
+            -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=$PWD/../install \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_CXX_FLAGS="-Werror" \
@@ -69,7 +72,7 @@ jobs:
 
       - name: build_and_install_kokkos
         working-directory: kokkos/build
-        run: make -j2 install
+        run: ninja install
 
       - name: test_kokkos
         working-directory: kokkos/build
