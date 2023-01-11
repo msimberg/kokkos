@@ -85,4 +85,4 @@ jobs:
 
       - name: test_kokkos
         working-directory: kokkos/build
-        run: ctest --timeout 2000 -j2 --verbose
+        run: ctest --timeout 2000 -j1 --verbose
