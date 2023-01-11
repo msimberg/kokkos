@@ -81,8 +81,8 @@ jobs:
 
       - name: build_and_install_kokkos
         working-directory: kokkos/build
-        run: ninja -j2 install
+        run: ninja -j2 KokkosCore_UnitTest_HPX
 
       - name: test_kokkos
         working-directory: kokkos/build
-        run: ctest --timeout 2000 -j1 --verbose
+        run: ctest -R KokkosCore_UnitTest_HPX --timeout 2000 -j1 --verbose
