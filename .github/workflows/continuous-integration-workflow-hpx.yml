@@ -25,6 +25,10 @@ jobs:
             libasio-dev \
             libboost-all-dev \
             ninja-build
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-hpx
       - name: checkout hpx
         uses: actions/checkout@v2.2.0
         with:
@@ -46,6 +50,7 @@ jobs:
             -GNinja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_INSTALL_PREFIX=$PWD/../install \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DHPX_WITH_UNITY_BUILD=ON \
             -DHPX_WITH_MALLOC=system \
@@ -66,6 +71,7 @@ jobs:
             -GNinja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_INSTALL_PREFIX=$PWD/../install \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_CXX_FLAGS="-Werror" \
             -DHPX_ROOT=$PWD/../../hpx/install \
