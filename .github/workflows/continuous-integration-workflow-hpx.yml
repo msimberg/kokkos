@@ -1,6 +1,6 @@
 name: github-Linux-hpx
 
-on: [push, pull_request]
+on: push
 
 concurrency:
   group: ${ {github.event_name }}-${{ github.workflow }}-${{ github.ref }}
