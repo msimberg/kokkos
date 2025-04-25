@@ -1,7 +1,7 @@
 name: github-Linux
 
 on:
-  workflow_call:
+  push:
 
 concurrency:
   group: ${ {github.event_name }}-${{ github.workflow }}-${{ github.ref }}-linux-x64
