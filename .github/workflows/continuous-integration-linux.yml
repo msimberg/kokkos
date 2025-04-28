@@ -143,6 +143,10 @@ jobs:
       - name: maybe_set_hpx_vars
         if: ${{ matrix.backend == 'HPX' }}
         run: echo "HPX_HANDLE_FAILED_NEW=0" >> $GITHUB_ENV
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        with:
+          detached: true
       - name: Configure Kokkos
         run: |
           cmake -B builddir \
